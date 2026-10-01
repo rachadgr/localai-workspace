@@ -258,6 +258,116 @@ def list_provisioned_models(_: User = Depends(get_current_user)) -> dict[str, An
 
 
 # --------------------------------------------------------------------------- #
+# Generation runtime — wiring status + experimental (protected) generation
+# --------------------------------------------------------------------------- #
+@router.get("/models/generation/status", tags=["models", "generation"])
+def generation_runtime_status(load: bool = False, _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Status of the wired **local generation runtime** (Wan 2.2 I2V), secret-free.
+
+    Read-only and weight-free by default: it reports which generation models are
+    wired in this build, whether their weights are present **on this host**, and the
+    lifecycle state (``NOT_CONFIGURED`` / ``LOADING`` / ``AVAILABLE`` / ``ERROR`` /
+    ``UNAVAILABLE``). Importing this app and calling this endpoint load **no** weights.
+
+    ``load=true`` triggers a **lazy** real load + probe (still weight-free at import)
+    so an operator can confirm the runtime is genuinely runnable; a missing checkpoint
+    yields ``NOT_CONFIGURED`` / ``weights_missing`` and nothing is ever downloaded.
+    """
+    return model_registry.generation_runtime_status(load=load)
+
+
+@router.get("/models/generation/router", tags=["models", "generation"])
+def generation_router_preview(_: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Deterministic gating decision for each generation task (no execution).
+
+    Shows, per generation task (``i2v`` / ``t2v`` / ``image``), the **hard**
+    capability/modality constraints and whether a wired runtime satisfies them. It
+    proves a chat / vision / image model can never be selected for image-to-video.
+    Performs no network I/O and loads no weights.
+    """
+    from models.generation_router import GENERATION_REQUIREMENTS, GenerationRouter
+
+    router_obj = GenerationRouter()
+    tasks = {task: router_obj.select(task).to_dict() for task in GENERATION_REQUIREMENTS}
+    return {"tasks": tasks, "capability_gated": True, "secrets_exposed": False}
+
+
+class GenerationRequestBody(BaseModel):
+    """Experimental, protected generation request (image-to-video).
+
+    Mirrors the internal :class:`models.generation_runtime.GenerationRequest` without
+    changing any chat/agent contract. ``image`` must be a **local** path — remote URLs
+    are rejected so no implicit download can occur.
+    """
+
+    model: str = Field(default="wan2.2-i2v", description="Registered generation model id")
+    image: str = Field(default="", description="Local path to the source image (no remote URLs)")
+    prompt: str = Field(default="", description="Text prompt guiding the motion")
+    duration: float = Field(default=5.0, description="Clip duration in seconds")
+    width: int = Field(default=832, description="Output width (multiple of 16)")
+    height: int = Field(default=480, description="Output height (multiple of 16)")
+    fps: int = Field(default=16, description="Frames per second")
+    name: str = Field(default="", description="Optional artifact stem")
+    options: dict[str, Any] = Field(default_factory=dict, description="Generation options (steps/guidance/seed…)")
+
+
+@router.post("/models/generation", tags=["models", "generation"])
+def run_generation(payload: GenerationRequestBody, _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """**Experimental** generation endpoint (protected by the existing auth).
+
+    Enforces the **hard** generation gate before doing anything: the target model's
+    runtime must genuinely expose ``video_generation`` with ``image``+``video``
+    modalities (see :class:`models.generation_router.GenerationRouter`). A chat /
+    vision / image model can never reach here for an I2V request.
+
+    Honesty rules:
+
+    * it only runs a **real** pipeline — never a mock; when the local weights are
+      absent it returns ``NOT_CONFIGURED`` / ``weights_missing`` (HTTP 503) and
+      nothing is downloaded;
+    * invalid input is rejected (HTTP 400) with a structured, secret-free body;
+    * no credentials/tokens/endpoints are ever returned (``secrets_exposed: false``).
+    """
+    from models.generation_router import TASK_I2V, GenerationRouter
+    from models.generation_runtime import GenerationRequest, get_local_generation_manager
+
+    decision = GenerationRouter().select(TASK_I2V, model_id=payload.model)
+    if not decision.selected:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "generation_not_servable",
+                "reason": decision.reason,
+                "outcome": decision.outcome,
+                "required": list(decision.required),
+                "modalities": list(decision.modalities),
+            },
+        )
+
+    request = GenerationRequest(
+        image=payload.image,
+        prompt=payload.prompt,
+        duration=payload.duration,
+        width=payload.width,
+        height=payload.height,
+        fps=payload.fps,
+        options=dict(payload.options or {}),
+        model_id=payload.model,
+        name=payload.name,
+    )
+    result = get_local_generation_manager().generate(request)
+    body = result.to_dict()
+    if result.status == STATUS_AVAILABLE:
+        return body
+    # Non-available: never a fabricated artifact. Distinguish "not provisioned" (503)
+    # from "invalid input" (400) so clients can react precisely.
+    if body.get("reason") == "invalid_input":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=body)
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=body)
+
+
+
+# --------------------------------------------------------------------------- #
 # Schemas
 # --------------------------------------------------------------------------- #
 class ConnectionTestRequest(BaseModel):

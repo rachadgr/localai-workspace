@@ -121,6 +121,33 @@ class Settings(BaseSettings):
         default_factory=lambda: os.environ.get("LAIW_LOCAL_ACTIVATION_PREFERRED_MODEL", "qwen3:4b")
     )
 
+    # ------------------------------------------------------ generation runtime
+    #: The first wired *generation* runtime is Wan 2.2 I2V (image-to-video). It is
+    #: **lazy and local-only**: importing/starting the app loads no weights; the
+    #: heaviest thing it ever does is a real probe *inside* an explicit generation
+    #: request. Weights are discovered on the local filesystem only — there is no
+    #: download path (`automatic_download = false`). No VRAM figure is ever invented;
+    #: dtype / offload / device_map are enabled only when the installed `torch` /
+    #: `accelerate` genuinely support them.
+    generation_runtime_enabled: bool = Field(
+        default_factory=lambda: os.environ.get("LAIW_GENERATION_RUNTIME_ENABLED", "true").lower() == "true"
+    )
+    #: Root directory holding locally-provisioned generation checkpoints. A runnable
+    #: Wan 2.2 I2V diffusers pipeline is looked up here (and one level deep).
+    generation_checkpoints_dir: str = Field(
+        default_factory=lambda: os.environ.get("LAIW_GENERATION_CHECKPOINTS_DIR", "")
+    )
+    #: Explicit path to a Wan 2.2 I2V checkpoint. When set (and valid) it wins over
+    #: directory scanning. Never fetched — must already exist on this host.
+    generation_wan_i2v_checkpoint: str = Field(
+        default_factory=lambda: os.environ.get("LAIW_WAN_I2V_CHECKPOINT", "")
+    )
+    #: When true, the read-only status endpoint runs a *real* load+probe (still lazy,
+    #: still weights-free at import). Default false keeps status cheap and weight-free.
+    generation_probe_on_status: bool = Field(
+        default_factory=lambda: os.environ.get("LAIW_GENERATION_PROBE_ON_STATUS", "false").lower() == "true"
+    )
+
     # -------------------------------------------------------------- tools
     http_timeout_seconds: float = 25.0
     max_upload_mb: int = Field(default_factory=lambda: int(os.environ.get("LAIW_MAX_UPLOAD_MB", "25")))

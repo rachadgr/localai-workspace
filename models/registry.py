@@ -555,17 +555,44 @@ class ModelRegistry:
         *,
         runtime_models: dict[str, Any] | None = None,
         endpoint_models: dict[str, tuple[str, ...]] | None = None,
+        provisioned_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Honest image/video/i2v state (supported runtime + a real sink ⇒ AVAILABLE).
 
-        Additive and read-only: this build wires **no** diffusers adapter, so every
-        registered generation model is reported ``NOT_CONFIGURED`` with a clear
-        reason unless an operator has genuinely wired a runtime/endpoint. No weights
-        are downloaded and no fake adapter is used.
+        Additive and read-only. A wired generation runtime (Wan 2.2 I2V) reports its
+        registrations ``NOT_CONFIGURED`` / ``weights_missing`` until local weights are
+        provisioned — no weights are downloaded and no fake adapter is used. The
+        un-wired diffusers runtime reports a clear "not wired in this build" reason.
         """
         from models.generation import generation_summary
 
-        return generation_summary(runtime_models=runtime_models, endpoint_models=endpoint_models)
+        if provisioned_ids is None:
+            from models.generation import default_provisioned_ids
+
+            provisioned_ids = default_provisioned_ids()
+        return generation_summary(
+            runtime_models=runtime_models,
+            endpoint_models=endpoint_models,
+            provisioned_ids=provisioned_ids,
+        )
+
+    def generation_runtime_status(self, *, load: bool = False) -> dict[str, Any]:
+        """Secret-free status of the wired local generation runtime(s).
+
+        Additive and read-only by default (``load=False``): it reports whether the
+        Wan 2.2 I2V checkpoint is present locally and the lifecycle state, **without**
+        loading any weights. ``load=True`` triggers a lazy real load + probe (still
+        weights-free at import) — used only behind an authenticated endpoint.
+        """
+        from models.generation_runtime import get_local_generation_manager
+
+        return get_local_generation_manager().status(load=load)
+
+    def generation_router(self):
+        """Return a :class:`models.generation_router.GenerationRouter` (hard gates)."""
+        from models.generation_router import GenerationRouter
+
+        return GenerationRouter()
 
     def runtimes(self) -> dict[str, Any]:
         """The runtime matrix (which runtimes this build can actually serve)."""
@@ -580,6 +607,7 @@ class ModelRegistry:
         runtime_models: dict[str, Any] | None = None,
         generation_runtime_models: dict[str, Any] | None = None,
         endpoint_models: dict[str, tuple[str, ...]] | None = None,
+        provisioned_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         """Explicit **CATALOG → INSTALLED → AVAILABLE** view of every catalog model.
 
@@ -591,11 +619,16 @@ class ModelRegistry:
         """
         from models.provisioning import provisioning_summary
 
+        if provisioned_ids is None:
+            from models.generation import default_provisioned_ids
+
+            provisioned_ids = default_provisioned_ids()
         return provisioning_summary(
             self,
             runtime_models=runtime_models,
             generation_runtime_models=generation_runtime_models,
             endpoint_models=endpoint_models,
+            provisioned_ids=provisioned_ids,
             enabled=bool(getattr(settings, "local_activation_enabled", True)),
         )
 

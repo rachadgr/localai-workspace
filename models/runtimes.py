@@ -44,6 +44,7 @@ from models.base import (
 # --------------------------------------------------------------------------- #
 RUNTIME_OLLAMA = "ollama"
 RUNTIME_DIFFUSERS = "diffusers"
+RUNTIME_WAN_I2V = "wan_i2v"
 RUNTIME_OPENAI_COMPATIBLE = "openai_compatible"
 RUNTIME_ANTHROPIC = "anthropic"
 
@@ -85,6 +86,17 @@ ALL_RUNTIME_MODALITIES = (
 UNWIRED_GENERATION_REASON = (
     "Generation runtime adapter is not wired in this build: models that need it are "
     "declarative registrations only, nothing is downloaded and no fake adapter is used."
+)
+
+#: Reason surfaced for a generation runtime that *is* wired in this build but whose
+#: weights are not present on this host. Distinct from :data:`UNWIRED_GENERATION_REASON`:
+#: the adapter exists (lazy, probe-first), it simply has nothing local to load — and it
+#: never downloads. Models served by such a runtime are reported ``NOT_CONFIGURED``
+#: with a ``weights_missing`` reason until an operator provisions the checkpoint.
+WEIGHTS_MISSING_REASON = (
+    "Generation runtime is wired but its weights are not present on this host "
+    "(NOT_CONFIGURED / WEIGHTS_MISSING): provision the checkpoint locally — nothing is "
+    "downloaded automatically and no fake output is produced."
 )
 
 
@@ -145,6 +157,19 @@ _RUNTIMES: tuple[RuntimeDescriptor, ...] = (
         surfaces=(SURFACE_IMAGE_GENERATION, SURFACE_VIDEO_GENERATION, SURFACE_IMAGE_TO_VIDEO),
         modalities=(MODALITY_TEXT, MODALITY_IMAGE, MODALITY_VIDEO),
         reason=UNWIRED_GENERATION_REASON,
+    ),
+    RuntimeDescriptor(
+        id=RUNTIME_WAN_I2V,
+        label="Wan 2.2 I2V (local, open weights)",
+        local=True,
+        #: The adapter wired in this build (``models.generation_runtime.WanI2VAdapter``).
+        #: It is lazy: importing/starting the app loads no weights; a real probe runs
+        #: only when a generation is explicitly requested, and only from a *local*
+        #: checkpoint (no download path exists).
+        adapter="WanI2VAdapter",
+        supported=True,
+        surfaces=(SURFACE_IMAGE_TO_VIDEO,),
+        modalities=(MODALITY_TEXT, MODALITY_IMAGE, MODALITY_VIDEO),
     ),
     RuntimeDescriptor(
         id=RUNTIME_OPENAI_COMPATIBLE,
@@ -256,6 +281,7 @@ def runtime_view() -> dict[str, Any]:
 __all__ = [
     "RUNTIME_OLLAMA",
     "RUNTIME_DIFFUSERS",
+    "RUNTIME_WAN_I2V",
     "RUNTIME_OPENAI_COMPATIBLE",
     "RUNTIME_ANTHROPIC",
     "SURFACE_CHAT",
@@ -267,6 +293,7 @@ __all__ = [
     "ALL_SURFACES",
     "ALL_RUNTIME_MODALITIES",
     "UNWIRED_GENERATION_REASON",
+    "WEIGHTS_MISSING_REASON",
     "RuntimeDescriptor",
     "RUNTIMES",
     "LOCAL_RUNTIMES",

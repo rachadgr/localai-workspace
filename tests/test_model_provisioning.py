@@ -202,13 +202,21 @@ def test_unknown_runtime_is_never_supported():
     assert "Unknown runtime" in runtime_reason("no-such-runtime")
 
 
-def test_generation_surfaces_have_no_wired_local_generation_runtime():
-    """No *local* generation runtime is wired in this build (diffusers is inert)."""
-    from models.runtimes import is_local_runtime as _is_local
+def test_generation_surfaces_local_wiring_is_explicit_and_honest():
+    """Image/t2v have no wired local runtime; I2V is wired exactly once (Wan 2.2 I2V).
 
-    for surface in (SURFACE_IMAGE_GENERATION, SURFACE_VIDEO_GENERATION, SURFACE_IMAGE_TO_VIDEO):
+    The image and text-to-video surfaces remain unwired (declarative only). The only
+    local generation runtime wired in this build is the Wan 2.2 I2V runtime, which is
+    lazy and weight-free at import (see ``tests/test_generation_runtime.py``).
+    """
+    from models.runtimes import RUNTIME_WAN_I2V, is_local_runtime as _is_local
+
+    for surface in (SURFACE_IMAGE_GENERATION, SURFACE_VIDEO_GENERATION):
         local_supported = [r for r in supported_runtimes_for_surface(surface) if _is_local(r.id)]
         assert local_supported == [], surface
+
+    i2v_local = [r.id for r in supported_runtimes_for_surface(SURFACE_IMAGE_TO_VIDEO) if _is_local(r.id)]
+    assert i2v_local == [RUNTIME_WAN_I2V]
 
 
 def test_runtime_matrix_performs_no_network_io():
@@ -280,13 +288,19 @@ def test_generation_module_imports_no_networking_library():
 # 3. Generation states — each state is reachable and explicit
 # --------------------------------------------------------------------------- #
 def test_generation_not_configured_when_runtime_unsupported():
-    outcomes = classify_generation()
+    outcomes = classify_generation(provisioned_ids=set())
+    # Every registration is NOT_CONFIGURED here (no weights / unwired runtime) and
+    # never AVAILABLE. The un-wired diffusers models carry an explicit "not wired"
+    # reason; the wired Wan I2V runtime reports weights_missing.
     for rid in REQUIRED_GENERATION_MODELS:
         o = outcomes[rid]
         assert o.state == GEN_NOT_CONFIGURED
         assert o.available is False
-        assert o.runtime_supported is False
-        assert "not wired in this build" in o.reason
+        assert o.reason
+    assert outcomes["qwen-image"].runtime_supported is False
+    assert "not wired in this build" in outcomes["qwen-image"].reason
+    assert outcomes["wan2.2-i2v"].runtime_supported is True
+    assert outcomes["wan2.2-i2v"].reason == "weights_missing"
 
 
 def test_generation_available_when_runtime_sink_confirmed():
@@ -345,7 +359,9 @@ def test_generation_states_vocabulary_is_complete():
 
 
 def test_available_generation_models_is_empty_in_this_build():
-    assert available_generation_models() == []
+    # The Wan 2.2 I2V runtime is wired, but with no local weights nothing is AVAILABLE
+    # (NOT_CONFIGURED / weights_missing) and no other runtime is wired.
+    assert available_generation_models(provisioned_ids=set()) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -364,12 +380,15 @@ def test_catalog_only_view_never_claims_available():
 
 def test_generation_models_are_not_configured_in_provisioning():
     reg = ModelRegistry(build_adapters=False)
-    rows = classify_provisioning(reg, runtime_models={})
+    rows = classify_provisioning(reg, runtime_models={}, provisioned_ids=set())
     for rid in REQUIRED_GENERATION_MODELS:
         assert rows[rid].state == PROV_NOT_CONFIGURED, rid
         assert rows[rid].available is False
-        assert rows[rid].runtime_supported is False
         assert rows[rid].reason
+    # The un-wired runtimes stay explicitly unsupported; the wired Wan I2V runtime is
+    # supported in this build yet still NOT_CONFIGURED here (no local weights).
+    assert rows["qwen-image"].runtime_supported is False
+    assert rows["wan2.2-i2v"].runtime_supported is True
 
 
 def test_installed_local_model_without_probe_is_installed_not_available():
@@ -424,12 +443,19 @@ def test_catalog_entry_runtime_for_generation_and_chat():
 # --------------------------------------------------------------------------- #
 # 5. Catalog wiring — runtime field + i2v modality + accurate notes
 # --------------------------------------------------------------------------- #
-def test_every_generation_catalog_entry_records_unsupported_runtime():
+def test_every_generation_catalog_entry_records_its_runtime():
+    from models.runtimes import RUNTIME_WAN_I2V
+
     for rid in REQUIRED_GENERATION_MODELS:
         entry = get_catalog_entry(rid)
         assert entry is not None
-        assert entry_runtime(entry) == RUNTIME_DIFFUSERS
-        assert entry_runtime_supported(entry) is False
+        if rid == "wan2.2-i2v":
+            # The one generation model whose runtime is wired in this build.
+            assert entry_runtime(entry) == RUNTIME_WAN_I2V
+            assert entry_runtime_supported(entry) is True
+        else:
+            assert entry_runtime(entry) == RUNTIME_DIFFUSERS
+            assert entry_runtime_supported(entry) is False
 
 
 def test_i2v_catalog_entries_declare_image_modality():
@@ -580,7 +606,10 @@ def test_generation_endpoint_shape(auth_client):
     assert body["available"] == []
     for m in body["models"]:
         assert m["state"] in ALL_GEN_STATES
-        assert m["runtime_supported"] is False
+    # Only the wired Wan 2.2 I2V runtime is supported here (still NOT_CONFIGURED with
+    # no local weights); every other generation model keeps an unwired runtime.
+    supported = {m["id"] for m in body["models"] if m["runtime_supported"]}
+    assert supported == {"wan2.2-i2v"}
 
 
 def test_provisioning_endpoint_shape(auth_client):

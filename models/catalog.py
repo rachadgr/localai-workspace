@@ -52,7 +52,7 @@ from models.base import (
     STATUS_NOT_CONFIGURED,
     infer_modality,
 )
-from models.runtimes import RUNTIME_DIFFUSERS
+from models.runtimes import RUNTIME_DIFFUSERS, RUNTIME_WAN_I2V
 
 # --------------------------------------------------------------------------- #
 # Provider classification (labels only — never credentials)
@@ -958,10 +958,14 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "alibaba",
         kind=KIND_VIDEO,
         cost_tier="medium",
-        runtime=RUNTIME_DIFFUSERS,
-        runtime_supported=False,
+        runtime=RUNTIME_WAN_I2V,
+        runtime_supported=True,
         modality=(MODALITY_TEXT, MODALITY_IMAGE, MODALITY_VIDEO),
-        notes="Image-to-video: consumes an image + prompt, produces video.",
+        notes=(
+            "Image-to-video: consumes an image + prompt, produces video. Served by the "
+            "local wan_i2v runtime, which is wired in this build (lazy, probe-first, "
+            "weights discovered on-host only — never downloaded)."
+        ),
     ),
     _entry(
         "hunyuanvideo",

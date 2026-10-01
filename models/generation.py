@@ -44,6 +44,7 @@ from models.base import (
 )
 from models.runtimes import (
     RUNTIME_DIFFUSERS,
+    RUNTIME_WAN_I2V,
     SURFACE_IMAGE_GENERATION,
     SURFACE_IMAGE_TO_VIDEO,
     SURFACE_VIDEO_GENERATION,
@@ -83,6 +84,10 @@ ALL_GEN_STATES = (GEN_AVAILABLE, GEN_INSTALLED, GEN_NOT_INSTALLED, GEN_NOT_CONFI
 REASON_RUNTIME_UNSUPPORTED = "runtime_unsupported"
 REASON_NO_SINK = "no_confirmed_sink"
 REASON_NOT_PRESENT = "not_present_on_host"
+#: The runtime is wired in this build but the model's weights are not present on
+#: this host. Surfaced as ``NOT_CONFIGURED`` with a clear reason — never a download
+#: and never a fabricated output.
+REASON_WEIGHTS_MISSING = "weights_missing"
 
 
 @dataclass(frozen=True)
@@ -205,11 +210,14 @@ _REGISTRATIONS: tuple[GenerationRegistration, ...] = (
         id="wan2.2-i2v",
         family="Wan",
         provider="alibaba",
-        runtime=RUNTIME_DIFFUSERS,
+        runtime=RUNTIME_WAN_I2V,
         kind=KIND_VIDEO,
         surfaces=(SURFACE_VIDEO_GENERATION, SURFACE_IMAGE_TO_VIDEO),
         official_ref="Wan-AI/Wan2.2-I2V-A14B",
-        notes="Image-to-video (MoE); also supports text-to-video per the model card.",
+        notes=(
+            "Image-to-video (MoE). Served by the local wan_i2v runtime wired in this "
+            "build; weights are discovered on-host only (no download path)."
+        ),
     ),
     GenerationRegistration(
         id="hunyuanvideo-i2v",
@@ -312,6 +320,7 @@ def classify_generation(
     *,
     runtime_models: dict[str, Any] | None = None,
     endpoint_models: dict[str, tuple[str, ...]] | None = None,
+    provisioned_ids: set[str] | None = None,
     scope_ids: set[str] | None = None,
 ) -> dict[str, GenerationOutcome]:
     """Pure classification of every generation registration (no network, no download).
@@ -325,11 +334,18 @@ def classify_generation(
     endpoint_models:
         ``{model_id: (endpoint, ...)}`` for models an operator wired to a real HTTP
         generation endpoint. Never created implicitly.
+    provisioned_ids:
+        Ids whose weights an operator has confirmed *local* on a runtime that is
+        wired but whose weights are not otherwise auto-discovered. A registration
+        served by such a runtime is ``NOT_CONFIGURED`` / ``weights_missing`` until
+        its id appears here (or a real ``runtime``/``endpoint`` sink is confirmed).
+        ``None``/empty means "no weights provisioned" — the honest default.
     scope_ids:
         Restrict the report to these ids.
     """
     runtime_models = runtime_models or {}
     endpoint_models = endpoint_models or {}
+    provisioned_ids = provisioned_ids or set()
     outcomes: dict[str, GenerationOutcome] = {}
 
     for reg in GENERATION_REGISTRATIONS:
@@ -349,7 +365,10 @@ def classify_generation(
             descriptor = _EndpointDescriptor(reg.id, explicit_endpoints, "")
 
         sink, endpoints = _confirmed_sink(reg, descriptor)
-        installed = descriptor is not None
+        # "installed" = physically present here: either the runtime reconciled a
+        # descriptor, or the operator confirmed this wired model's weights are local.
+        provisioned_here = reg.runtime == RUNTIME_WAN_I2V and reg.id in provisioned_ids
+        installed = descriptor is not None or provisioned_here
 
         if not supported:
             # A runtime with no adapter in this build → NOT_CONFIGURED + a clear reason.
@@ -357,7 +376,12 @@ def classify_generation(
         elif sink in (SINK_RUNTIME, SINK_ENDPOINT):
             state, final_reason = GEN_AVAILABLE, ""
         elif installed:
+            # Present (descriptor or provisioned weights) but no live sink confirmed.
             state, final_reason = GEN_INSTALLED, REASON_NO_SINK
+        elif reg.runtime == RUNTIME_WAN_I2V:
+            # Wired runtime, no local weights discovered → NOT_CONFIGURED, honest reason.
+            # Never a download, never a fake AVAILABLE.
+            state, final_reason = GEN_NOT_CONFIGURED, REASON_WEIGHTS_MISSING
         else:
             state, final_reason = GEN_NOT_INSTALLED, REASON_NOT_PRESENT
 
@@ -395,13 +419,36 @@ class _EndpointDescriptor:
 # --------------------------------------------------------------------------- #
 # Report
 # --------------------------------------------------------------------------- #
+def default_provisioned_ids() -> set[str]:
+    """Local-generation ids whose weights this host actually holds (no download).
+
+    Additive, offline and lazy: it asks the local generation runtime whether the
+    configured checkpoint exists on disk. It loads/imports nothing heavy, performs no
+    network I/O and never downloads. When the runtime module cannot be consulted the
+    empty set is returned (the honest "nothing provisioned" default).
+    """
+    try:
+        from models.generation_runtime import get_local_generation_manager
+
+        return get_local_generation_manager().provisioned_ids()
+    except Exception:  # noqa: BLE001 - a read-only view must never crash
+        return set()
+
+
 def generation_summary(
     *,
     runtime_models: dict[str, Any] | None = None,
     endpoint_models: dict[str, tuple[str, ...]] | None = None,
+    provisioned_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Compact, JSON-safe generation report (never contains secrets)."""
-    outcomes = classify_generation(runtime_models=runtime_models, endpoint_models=endpoint_models)
+    if provisioned_ids is None:
+        provisioned_ids = default_provisioned_ids()
+    outcomes = classify_generation(
+        runtime_models=runtime_models,
+        endpoint_models=endpoint_models,
+        provisioned_ids=provisioned_ids,
+    )
     models = [o.to_dict() for o in sorted(outcomes.values(), key=lambda o: o.id)]
 
     def ids(state: str) -> list[str]:
@@ -428,9 +475,16 @@ def available_generation_models(
     *,
     runtime_models: dict[str, Any] | None = None,
     endpoint_models: dict[str, tuple[str, ...]] | None = None,
+    provisioned_ids: set[str] | None = None,
 ) -> list[str]:
     """Ids of generation models that are genuinely available (real sink, supported runtime)."""
-    outcomes = classify_generation(runtime_models=runtime_models, endpoint_models=endpoint_models)
+    if provisioned_ids is None:
+        provisioned_ids = default_provisioned_ids()
+    outcomes = classify_generation(
+        runtime_models=runtime_models,
+        endpoint_models=endpoint_models,
+        provisioned_ids=provisioned_ids,
+    )
     return sorted(o.id for o in outcomes.values() if o.available)
 
 
@@ -447,6 +501,7 @@ __all__ = [
     "REASON_RUNTIME_UNSUPPORTED",
     "REASON_NO_SINK",
     "REASON_NOT_PRESENT",
+    "REASON_WEIGHTS_MISSING",
     "GenerationRegistration",
     "GENERATION_REGISTRATIONS",
     "GenerationOutcome",
@@ -456,6 +511,7 @@ __all__ = [
     "is_generation_model",
     "registrations_for_surface",
     "classify_generation",
+    "default_provisioned_ids",
     "generation_summary",
     "available_generation_models",
 ]

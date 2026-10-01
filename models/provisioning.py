@@ -119,6 +119,7 @@ def classify_provisioning(
     runtime_models: dict[str, Any] | None = None,
     generation_runtime_models: dict[str, Any] | None = None,
     endpoint_models: dict[str, tuple[str, ...]] | None = None,
+    provisioned_ids: set[str] | None = None,
     enabled: bool = True,
 ) -> dict[str, ProvisionedModel]:
     """Pure composition of the catalog, the install view and the probed status.
@@ -135,6 +136,10 @@ def classify_provisioning(
         Descriptors for generation models a *supported* runtime reconciled.
     endpoint_models:
         Operator-configured HTTP generation endpoints per model id.
+    provisioned_ids:
+        Generation ids whose weights an operator confirmed *local* on a wired runtime.
+        ``None`` (the pure default) asserts nothing — a wired-but-unprovisioned
+        generation model stays ``NOT_CONFIGURED`` with a clear reason.
     enabled:
         When ``False`` no install verdict is asserted for local models.
     """
@@ -150,6 +155,7 @@ def classify_provisioning(
     gen_outcomes = classify_generation(
         runtime_models=generation_runtime_models or {},
         endpoint_models=endpoint_models or {},
+        provisioned_ids=provisioned_ids or set(),
     )
 
     out: dict[str, ProvisionedModel] = {}
@@ -237,6 +243,7 @@ def provisioning_summary(
     runtime_models: dict[str, Any] | None = None,
     generation_runtime_models: dict[str, Any] | None = None,
     endpoint_models: dict[str, tuple[str, ...]] | None = None,
+    provisioned_ids: set[str] | None = None,
     enabled: bool = True,
 ) -> dict[str, Any]:
     """JSON-safe provisioning report grouped by kind + state (never contains secrets)."""
@@ -245,6 +252,7 @@ def provisioning_summary(
         runtime_models=runtime_models,
         generation_runtime_models=generation_runtime_models,
         endpoint_models=endpoint_models,
+        provisioned_ids=provisioned_ids,
         enabled=enabled,
     )
     models = [m.to_dict() for m in sorted(rows.values(), key=lambda m: (m.kind, m.id))]
