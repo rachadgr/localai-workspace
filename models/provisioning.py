@@ -41,7 +41,7 @@ from models.generation import (
     get_generation_registration,
     is_generation_model,
 )
-from models.local import classify_local_activation, installed_local_ids
+from models.local import canonical_installed_ids, classify_local_activation, installed_local_ids, resolve_runtime_info
 from models.runtimes import is_local_runtime, runtime_status
 
 # --------------------------------------------------------------------------- #
@@ -151,7 +151,7 @@ def classify_provisioning(
             models = {}
 
     local_outcomes = classify_local_activation(models, enabled=enabled)
-    installed_local = installed_local_ids(models)
+    installed_local = canonical_installed_ids(models)
     gen_outcomes = classify_generation(
         runtime_models=generation_runtime_models or {},
         endpoint_models=endpoint_models or {},
@@ -163,7 +163,7 @@ def classify_provisioning(
         runtime = catalog_entry_runtime(entry.id)
         supported, reason = runtime_status(runtime)
         is_local = entry.local or entry.provider in LOCAL_PROVIDERS or is_local_runtime(runtime)
-        info = models.get(entry.id)
+        info = resolve_runtime_info(models, entry.id)
 
         discovered = info is not None
         installed = False

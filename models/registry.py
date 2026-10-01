@@ -422,8 +422,19 @@ class ModelRegistry:
         return HealthReport(status=STATUS_AVAILABLE, ok=True)
 
     def check_model_health(self, model_id: str, force: bool = False) -> HealthReport:
-        """Probe a single model on demand (cached)."""
-        info = self.refresh().get(model_id)
+        """Probe a single model on demand (cached).
+
+        The id may be either a runtime id (e.g. ``nomic-embed-text:latest``) or its
+        catalog-canonical form (``nomic-embed-text``); the implicit ``:latest`` tag
+        Ollama adds to an untagged pull is reconciled so an installed model is never
+        reported unknown just because of that tag.
+        """
+        models = self.refresh()
+        info = models.get(model_id)
+        if info is None:
+            from models.local import resolve_runtime_info
+
+            info = resolve_runtime_info(models, model_id)
         if info is None:
             return HealthReport(status=STATUS_UNAVAILABLE, ok=False, error=f"Unknown model '{model_id}'")
         adapter = self._adapters.get(info.provider)
@@ -439,11 +450,12 @@ class ModelRegistry:
             endpoint=info.endpoint,
         )
         report = self._probe_model(adapter, desc, force=force)
-        if model_id in self._models:
-            self._models[model_id].status = report.status
-            self._models[model_id].health = report.to_dict()
-            self._models[model_id].last_checked = report.checked_at
-            self._models[model_id].error = report.error
+        # Update the shared ModelInfo instance (it is the same object held in
+        # ``self._models``), so the resolved runtime id reflects the real probe.
+        info.status = report.status
+        info.health = report.to_dict()
+        info.last_checked = report.checked_at
+        info.error = report.error
         return report
 
     # ------------------------------------------------------------- persist
@@ -508,8 +520,10 @@ class ModelRegistry:
         """
         runtime = self.refresh()
         merged: list[ModelInfo] = []
+        from models.local import resolve_runtime_info
+
         for entry in catalog_entries():
-            live = runtime.get(entry.id)
+            live = resolve_runtime_info(runtime, entry.id)
             if live is not None:
                 merged.append(live)
                 continue

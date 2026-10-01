@@ -83,6 +83,27 @@ def is_local_provider(provider: str) -> bool:
     return (provider or "").strip().lower() in LOCAL_PROVIDERS
 
 
+#: The tag a local runtime (Ollama) applies to an *untagged* pull. ``ollama pull
+#: nomic-embed-text`` is served as ``nomic-embed-text:latest``, whereas the catalog
+#: declares the untagged ``nomic-embed-text``. The two must be reconciled or an
+#: installed model would be wrongly reported as NOT_INSTALLED.
+IMPLICIT_LATEST_TAG = ":latest"
+
+
+def canonical_model_id(model_id: str) -> str:
+    """Return the catalog-canonical form of a runtime model id.
+
+    Ollama exposes an untagged pull under ``<name>:latest`` while the catalog stores
+    the untagged ``<name>``; stripping that single implicit tag lets an installed
+    model match its declared catalog id. Any *explicit* tag (e.g. ``qwen3:8b``) is
+    preserved verbatim — only the implicit ``:latest`` is normalised.
+    """
+    mid = str(model_id or "")
+    if mid.endswith(IMPLICIT_LATEST_TAG):
+        return mid[: -len(IMPLICIT_LATEST_TAG)]
+    return mid
+
+
 # --------------------------------------------------------------------------- #
 # Catalog entry
 # --------------------------------------------------------------------------- #
@@ -1043,7 +1064,9 @@ __all__ = [
     "ModelCatalogEntry",
     "CATALOG",
     "LOCAL_PROVIDERS",
+    "IMPLICIT_LATEST_TAG",
     "is_local_provider",
+    "canonical_model_id",
     "entry_runtime",
     "entry_runtime_supported",
     "catalog_entries",

@@ -45,7 +45,12 @@ from models.base import (
     STATUS_AVAILABLE,
     STATUS_NOT_CONFIGURED,
 )
-from models.catalog import LOCAL_PROVIDERS, catalog_entries, get_catalog_entry
+from models.catalog import (
+    LOCAL_PROVIDERS,
+    canonical_model_id,
+    catalog_entries,
+    get_catalog_entry,
+)
 
 logger = get_logger("local_model_activation")
 
@@ -136,6 +141,17 @@ def installed_local_ids(runtime_models: dict[str, Any]) -> set[str]:
     return installed
 
 
+def canonical_installed_ids(runtime_models: dict[str, Any]) -> set[str]:
+    """Installed ids reconciled with the catalog's canonical form.
+
+    A local runtime (Ollama) exposes an untagged pull as ``<name>:latest`` while the
+    catalog declares ``<name>``; this maps each installed runtime id to its canonical
+    catalog id so an installed model genuinely matches its declared entry. Ids without
+    an implicit ``:latest`` tag (e.g. ``qwen3:8b``) are returned unchanged.
+    """
+    return {canonical_model_id(mid) for mid in installed_local_ids(runtime_models)}
+
+
 def is_local_catalog_entry(model_id: str) -> bool:
     """True when ``model_id`` is declared for a local runtime in the catalog."""
     entry = get_catalog_entry(model_id)
@@ -144,6 +160,22 @@ def is_local_catalog_entry(model_id: str) -> bool:
 
 def _status_of(info: Any) -> str:
     return str(getattr(info, "status", STATUS_NOT_CONFIGURED) or STATUS_NOT_CONFIGURED)
+
+
+def resolve_runtime_info(runtime_models: dict[str, Any], catalog_id: str) -> Any:
+    """Resolve the runtime ``ModelInfo`` for a catalog id, tolerating an implicit tag.
+
+    The runtime may expose an untagged catalog id under ``<id>:latest``; this looks up
+    the exact id first and, when absent, the canonical form — so an installed model is
+    never missed because of Ollama's implicit ``:latest`` tag.
+    """
+    info = runtime_models.get(catalog_id)
+    if info is not None:
+        return info
+    for runtime_id, runtime_info in runtime_models.items():
+        if canonical_model_id(runtime_id) == catalog_id:
+            return runtime_info
+    return None
 
 
 def _probe_view(info: Any) -> dict[str, Any]:
@@ -181,7 +213,7 @@ def classify_local_activation(
     * A local entry absent from ``runtime_models`` is ``NOT_INSTALLED`` and keeps
       the ``NOT_CONFIGURED`` status — **never** ``AVAILABLE``.
     """
-    installed = installed_local_ids(runtime_models)
+    installed = canonical_installed_ids(runtime_models)
     outcomes: dict[str, LocalModelOutcome] = {}
 
     for entry in catalog_entries():
@@ -191,7 +223,7 @@ def classify_local_activation(
         if scope_ids is not None and entry.id not in scope_ids:
             continue
 
-        info = runtime_models.get(entry.id)
+        info = resolve_runtime_info(runtime_models, entry.id)
         installed_here = entry.id in installed
         caps = list(getattr(info, "capabilities", None) or entry.capabilities) if info is not None else list(entry.capabilities)
         modality = list(getattr(info, "modality", None) or entry.modality) if info is not None else list(entry.modality)
@@ -296,7 +328,7 @@ class LocalModelActivation:
         """
         if self.probe_all:
             return None
-        installed = installed_local_ids(runtime_models)
+        installed = canonical_installed_ids(runtime_models)
         installed_catalog = [m for m in installed if is_local_catalog_entry(m)]
         if not installed_catalog:
             return set()
@@ -309,7 +341,7 @@ class LocalModelActivation:
     def installed_model_ids(self, *, force: bool = False) -> set[str]:
         """Ids the local runtime actually has installed (no download)."""
         runtime = self.registry.refresh(force=force)
-        return installed_local_ids(runtime)
+        return canonical_installed_ids(runtime)
 
     # --------------------------------------------------------------- probe
     def _ensure_probed(self, model_ids: list[str], *, force: bool) -> None:
@@ -344,7 +376,7 @@ class LocalModelActivation:
         if not self.enabled:
             return classify_local_activation(runtime, enabled=False)
 
-        installed = installed_local_ids(runtime)
+        installed = canonical_installed_ids(runtime)
         scope = self._scope_ids(runtime)
         to_probe = sorted(
             model_id for model_id in installed if is_local_catalog_entry(model_id) and (scope is None or model_id in scope)
@@ -404,6 +436,8 @@ __all__ = [
     "LocalModelActivation",
     "classify_local_activation",
     "installed_local_ids",
+    "canonical_installed_ids",
+    "resolve_runtime_info",
     "is_local_catalog_entry",
     "available_local_models",
     "local_activation_summary",

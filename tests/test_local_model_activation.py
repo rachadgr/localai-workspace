@@ -614,3 +614,59 @@ def test_local_activation_needs_no_api_key_or_cloud_provider():
     assert summary["available"] == ["qwen3:4b"]
     # Only the local provider exists; no cloud adapter was required.
     assert list(reg.adapters().keys()) == ["ollama"]
+
+
+# --------------------------------------------------------------------------- #
+# 11. Implicit ``:latest`` reconciliation (Ollama tag ↔ catalog id)
+# --------------------------------------------------------------------------- #
+def test_canonical_model_id_strips_only_the_implicit_latest_tag():
+    from models.catalog import canonical_model_id
+
+    assert canonical_model_id("nomic-embed-text:latest") == "nomic-embed-text"
+    assert canonical_model_id("bge-m3:latest") == "bge-m3"
+    # An explicit tag is preserved verbatim; a bare id is unchanged.
+    assert canonical_model_id("qwen3:8b") == "qwen3:8b"
+    assert canonical_model_id("qwen3-vl:8b") == "qwen3-vl:8b"
+    assert canonical_model_id("nomic-embed-text") == "nomic-embed-text"
+
+
+def test_installed_embedder_with_implicit_latest_is_recognised():
+    """An untagged pull served as ``<name>:latest`` matches its catalog entry."""
+    reg = make_local_registry(FakeOllama(["nomic-embed-text:latest", "bge-m3:latest"]))
+    reg.refresh(force=True)
+    outcomes = reg.local_activation().run()
+    for model_id in ("nomic-embed-text", "bge-m3"):
+        outcome = outcomes[model_id]
+        assert outcome.installed is True, model_id
+        assert outcome.activation == ACTIVATION_ACTIVE, model_id
+        assert outcome.available is True, model_id
+
+
+def test_canonical_installed_ids_reconciles_the_latest_tag():
+    from models.local import canonical_installed_ids
+
+    reg = make_local_registry(FakeOllama(["nomic-embed-text:latest", "qwen3:8b"]))
+    runtime = reg.refresh(force=True)
+    assert canonical_installed_ids(runtime) == {"nomic-embed-text", "qwen3:8b"}
+
+
+def test_provisioning_reports_available_for_latest_tagged_embedder():
+    from models.provisioning import PROV_AVAILABLE, classify_provisioning
+
+    reg = make_local_registry(FakeOllama(["nomic-embed-text:latest"]))
+    reg.refresh(force=True)
+    rows = classify_provisioning(reg, runtime_models=reg.refresh())
+    assert rows["nomic-embed-text"].installed is True
+    assert rows["nomic-embed-text"].available is True
+    assert rows["nomic-embed-text"].state == PROV_AVAILABLE
+
+
+def test_activation_probe_covers_installed_embedder_with_latest_tag():
+    """Activation actually probes the resolved ``:latest`` runtime id (real request)."""
+    adapter = FakeOllama(["nomic-embed-text:latest"])
+    reg = make_local_registry(adapter)
+    reg.refresh(force=True)
+    outcome = reg.local_activation().run(force=True)["nomic-embed-text"]
+    assert outcome.probed is True and outcome.probe_ok is True
+    assert "nomic-embed-text:latest" in adapter.embed_calls
+
