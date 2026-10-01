@@ -28,6 +28,9 @@
   .MISCONFIGURED, .ERROR { background:rgba(239,91,107,.15); color:var(--err); border:1px solid rgba(239,91,107,.35); }
   .DISABLED { background:rgba(154,162,177,.15); color:var(--muted); border:1px solid var(--line); }
   .LOADING { background:rgba(108,140,255,.15); color:var(--accent); border:1px solid rgba(108,140,255,.35); }
+  /* NOT_CONFIGURED = declared in the catalog but not installed/reachable here.
+     Deliberately neutral (dashed) so it is never mistaken for AVAILABLE. */
+  .NOT_CONFIGURED { background:rgba(154,162,177,.08); color:var(--muted); border:1px dashed var(--line); }
   table { width:100%; border-collapse:collapse; margin-top:14px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
@@ -38,6 +41,14 @@
   .hidden { display:none; }
   .banner { background:var(--panel2); border:1px dashed var(--line); padding:12px 14px; border-radius:10px; margin-top:14px; }
   .err { color:var(--err); }
+  .cat { display:inline-block; background:rgba(108,140,255,.12); color:var(--accent); border:1px solid rgba(108,140,255,.3); border-radius:6px; padding:1px 6px; margin:1px; font-size:11px; }
+  .flag { display:inline-block; border-radius:6px; padding:1px 6px; margin:1px; font-size:11px; border:1px solid var(--line); color:var(--muted); }
+  .flag.on { color:var(--ok); border-color:rgba(49,196,141,.35); background:rgba(49,196,141,.08); }
+  .legend { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  .legend span { font-size:12px; }
+  .tier { font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
+  .tier.free { color:var(--ok); } .tier.low { color:#7fd1ae; }
+  .tier.medium { color:var(--warn); } .tier.high { color:var(--err); } .tier.unknown { color:var(--muted); }
 </style>
 </head>
 <body>
@@ -98,12 +109,57 @@
     <h3 style="margin-top:26px">Connection diagnostics</h3>
     <div class="banner muted">A real minimal request is sent to each configured provider. Results are redacted — no key ever appears here.</div>
     <div id="diag" class="grid"></div>
+
+    <h3 style="margin-top:30px">Model Catalog</h3>
+    <div class="banner muted">
+      Declared multi-modal metadata (provider · family · modality · capabilities · context window ·
+      reasoning · vision · tools · streaming · local · cost tier) merged with the <b>real</b> runtime status.
+      A model is <b>AVAILABLE</b> only when the runtime confirmed it with a real probe — catalog metadata
+      can <b>never</b> override the runtime status. No weights are downloaded and no API keys are shown.
+    </div>
+    <div class="legend">
+      <span class="badge AVAILABLE">AVAILABLE</span><span class="muted">confirmed by a live probe</span>
+      <span class="badge NOT_CONFIGURED">NOT_CONFIGURED</span><span class="muted">declared, not installed here</span>
+      <span class="badge MISCONFIGURED">MISCONFIGURED</span><span class="muted">provider wired but credentials/route wrong</span>
+      <span class="badge UNAVAILABLE">UNAVAILABLE</span><span class="muted">provider reachable but the model failed</span>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <span class="pill">Catalog total: <b id="catTotal">—</b></span>
+      <span class="pill">Runtime AVAILABLE: <b id="catAvail">—</b></span>
+      <span class="pill">Config source: <b id="catSource">—</b></span>
+      <span class="pill">Secrets exposed: <b>false</b></span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <input id="catSearch" placeholder="Search by model id / provider / family" style="min-width:260px" />
+      <select id="catCategory">
+        <option value="">All modalities</option>
+        <option>chat</option><option>reasoning</option><option>coding</option>
+        <option>vision</option><option>image</option><option>video</option><option>embedding</option>
+      </select>
+      <select id="catStatus">
+        <option value="">All statuses</option>
+        <option>AVAILABLE</option><option>NOT_CONFIGURED</option><option>MISCONFIGURED</option>
+        <option>UNAVAILABLE</option><option>DISABLED</option><option>LOADING</option><option>ERROR</option>
+      </select>
+      <select id="catProvider"><option value="">All providers</option></select>
+      <button id="catRefresh" class="btn ghost">Refresh catalog</button>
+    </div>
+    <div style="overflow:auto">
+      <table id="catalogTable">
+        <thead><tr>
+          <th>Model</th><th>Provider</th><th>Family</th><th>Modality</th><th>Status</th>
+          <th>Context</th><th>Flags</th><th>Cost</th><th>Capabilities</th><th>Last checked</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 </main>
 
 <script>
 const API = "/api";
 let token = localStorage.getItem("laiw_token") || "";
+let catalog = [];  // last fetched Model Catalog rows
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
@@ -195,6 +251,69 @@ function renderDiag(results) {
   });
 }
 
+// --------------------------------------------------------------- Model Catalog
+function catFlags(m) {
+  const flag = (label, on) => `<span class="flag ${on ? "on" : ""}">${label}</span>`;
+  return flag("reasoning", m.reasoning) + flag("vision", m.vision) + flag("tools", m.tools)
+    + flag("streaming", m.streaming) + flag("local", m.local);
+}
+
+function renderCatalog() {
+  const q = $("catSearch").value.trim().toLowerCase();
+  const cat = $("catCategory").value;
+  const st = $("catStatus").value;
+  const prov = $("catProvider").value;
+  const tbody = $("catalogTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  const rows = catalog
+    .filter(m => !cat || (m.category || []).includes(cat))
+    .filter(m => !st || m.status === st)
+    .filter(m => !prov || m.provider === prov)
+    .filter(m => !q || ((m.id || "") + " " + (m.provider || "") + " " + (m.family || "")).toLowerCase().includes(q));
+  rows.forEach(m => {
+    const tr = document.createElement("tr");
+    const modality = (m.modality || []).map(x => `<span class="cap">${x}</span>`).join("");
+    const cats = (m.category || []).map(x => `<span class="cat">${x}</span>`).join("");
+    const caps = (m.capabilities || []).map(c => `<span class="cap">${c}</span>`).join("");
+    const checked = m.last_checked ? new Date(m.last_checked * 1000).toLocaleTimeString() : "—";
+    const tier = (m.cost_tier || "unknown");
+    tr.innerHTML = `<td><code>${m.id}</code><div class="muted" style="font-size:11px">${m.name || ""}</div></td>
+      <td>${m.provider}${m.local ? ' <span class="flag on">local</span>' : ""}</td>
+      <td class="muted">${m.family || "—"}</td>
+      <td>${modality}<div style="margin-top:2px">${cats}</div></td>
+      <td>${badge(m.status)}</td>
+      <td>${m.context_window || "—"}</td>
+      <td>${catFlags(m)}</td>
+      <td><span class="tier ${tier}">${tier}</span></td>
+      <td>${caps}</td>
+      <td class="muted">${checked}</td>`;
+    tbody.appendChild(tr);
+  });
+  const box = $("catalogTable").parentElement;
+  let empty = document.getElementById("catEmpty");
+  if (!rows.length) {
+    if (!empty) { empty = el("div", "banner muted", "No catalog models match the current filters."); empty.id = "catEmpty"; box.appendChild(empty); }
+  } else if (empty) { empty.remove(); }
+}
+
+function populateProviderFilter(providers) {
+  const sel = $("catProvider");
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All providers</option>';
+  (providers || []).forEach(p => { const o = document.createElement("option"); o.textContent = p; sel.appendChild(o); });
+  if (current) sel.value = current;
+}
+
+async function loadCatalog() {
+  const body = await api("/models/catalog");
+  catalog = body.models || [];
+  $("catTotal").textContent = String(body.total ?? catalog.length);
+  $("catAvail").textContent = String(body.available ?? 0);
+  $("catSource").textContent = body.config_source || "catalog+runtime";
+  populateProviderFilter(body.providers);
+  renderCatalog();
+}
+
 async function loadAll() {
   const health = await api("/models");
   $("overall").textContent = health.status;
@@ -203,6 +322,7 @@ async function loadAll() {
   renderProviders(health.providers);
   renderModels(health.models);
   try { const rt = await api("/models/router"); renderRouting(rt.tasks); } catch (e) { /* ignore */ }
+  try { await loadCatalog(); } catch (e) { /* catalog is additive; never blocks the page */ }
 }
 
 async function testConnections() {
@@ -216,6 +336,11 @@ $("refresh").onclick = () => loadAll().catch(e => alert(e.message));
 $("test").onclick = () => testConnections().catch(e => alert(e.message));
 $("filter").oninput = () => loadAll().catch(() => {});
 $("typeFilter").onchange = () => loadAll().catch(() => {});
+$("catSearch").oninput = () => renderCatalog();
+$("catCategory").onchange = () => renderCatalog();
+$("catStatus").onchange = () => renderCatalog();
+$("catProvider").onchange = () => renderCatalog();
+$("catRefresh").onclick = () => loadCatalog().catch(e => alert(e.message));
 
 if (token) { setAuth(true); loadAll().catch(() => { token = ""; localStorage.removeItem("laiw_token"); setAuth(false); }); }
 </script>

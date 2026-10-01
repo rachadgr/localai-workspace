@@ -14,6 +14,22 @@ Base path: `/api`. Auth: `Authorization: Bearer <jwt>` (except health/version an
   states, and the full model list with `id, name, provider, type, capabilities,
   context_length, vision, tools, streaming, local, endpoint, status, health,
   last_checked, error, config_source`. **Never includes API keys.**
+- `GET /api/models/catalog` — **Model Catalog**: the declared, multi-modal model
+  set merged with the **real** runtime status. Each row exposes
+  `id, name, family, provider, kind, modality, capabilities, category,
+  context_window, reasoning, vision, tools, streaming, local, cost_tier` **plus**
+  the runtime `status`, `available`, `runtime`, `catalog`, `config_source`,
+  `endpoint`, `last_checked`, `error`, `notes`. The response also carries
+  `total`, `available`, `providers`, `categories`, `statuses`, `counts` and
+  `secrets_exposed: false`.
+  - `AVAILABLE` is reported **only** when the runtime registry confirmed it with a
+    real probe; catalog metadata can **never** override the runtime status.
+  - `NOT_CONFIGURED` = declared in the catalog but not installed/reachable on this
+    instance; `MISCONFIGURED` = provider wired but credentials/route wrong;
+    `UNAVAILABLE` = provider reachable but the model failed.
+  - `category` is a coarse UI filter (`chat, reasoning, coding, vision, image,
+    video, embedding`) derived from declared metadata — it never implies usability.
+  - No new network I/O, no weight download, no secrets.
 - `GET /api/models/providers` — per-provider `{status, configured, local, endpoint, error}`
 - `GET /api/models/router` — deterministic routing decision for each task class
   (`chat, code, document, vision, tools, reasoning, image, embedding, video`)
@@ -24,9 +40,11 @@ Base path: `/api`. Auth: `Authorization: Bearer <jwt>` (except health/version an
   `{provider, configured, status, ok, model, latency_ms, error, endpoint, local}`.
   All diagnostics are **redacted** (`secrets_exposed: false`).
 
-Provider states: `AVAILABLE | UNAVAILABLE | MISCONFIGURED | DISABLED | LOADING | ERROR`.
-A model is only `AVAILABLE` after a real probe succeeds — appearing in a provider's
-model list is never treated as proof of usability.
+Provider/model states: `AVAILABLE | UNAVAILABLE | MISCONFIGURED | DISABLED | LOADING |
+ERROR | NOT_CONFIGURED`. A model is only `AVAILABLE` after a real probe succeeds —
+appearing in a provider's model list (or in the catalog) is never treated as proof
+of usability. `NOT_CONFIGURED` marks a declared catalog model that is not installed
+/ wired up on this instance.
 
 ## Auth
 - `POST /api/auth/register` `{email, password, display_name?}` → `{access_token, user}`
