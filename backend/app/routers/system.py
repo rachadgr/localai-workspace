@@ -90,9 +90,10 @@ def me(user: User = Depends(get_current_user)) -> UserOut:
 # --------------------------------------------------------------------------- #
 # registries (read-only)
 # --------------------------------------------------------------------------- #
-@router.get("/models", tags=["registry"])
-def list_models(_: User = Depends(get_current_user)) -> dict[str, Any]:
-    return model_registry.health()
+# NOTE: the full Models/Providers API (discovery, health, routing, connection
+# test) now lives in ``backend/app/routers/models.py``. The models router is
+# registered *before* this one in ``main.py`` so its richer ``/models`` surface
+# wins. ``/api/models`` (legacy shape) remains available from that router.
 
 
 @router.get("/tools", tags=["registry"])

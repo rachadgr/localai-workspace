@@ -19,6 +19,7 @@ from backend.app.core.events import bus
 from backend.app.core.observability import configure_logging, get_logger
 from backend.app.middleware import RateLimitMiddleware, RequestContextMiddleware
 from backend.app.routers import agent as agent_router
+from backend.app.routers import models as models_router
 from backend.app.routers import projects as projects_router
 from backend.app.routers import system as system_router
 from configs.settings import settings
@@ -110,6 +111,9 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content=app_err.to_dict())
 
     # ------------------------------------------------------------ routers
+    # Models/Providers router is registered first so its richer /models surface
+    # takes precedence over the legacy one.
+    app.include_router(models_router.router, prefix="/api")
     app.include_router(system_router.router, prefix="/api")
     app.include_router(projects_router.router, prefix="/api")
     app.include_router(agent_router.router, prefix="/api")

@@ -13,7 +13,9 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+#: Repository root (the directory containing ``backend/``, ``agents/``, ``configs/``…).
+#: ``configs/settings.py`` → parents[0] = configs, parents[1] = repo root.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _first_env(*names: str, default: str = "") -> str:
@@ -70,6 +72,23 @@ class Settings(BaseSettings):
     llm_fast_model: str = Field(default_factory=lambda: os.environ.get("LAIW_FAST_MODEL", "gpt-5.4-mini"))
     llm_timeout_seconds: float = Field(default_factory=lambda: float(os.environ.get("LAIW_LLM_TIMEOUT", "180")))
     llm_max_tokens: int = Field(default_factory=lambda: int(os.environ.get("LAIW_LLM_MAX_TOKENS", "4096")))
+
+    # --------------------------------------------------- additional providers
+    # Local models (Ollama / llama.cpp server / LM Studio all speak the
+    # OpenAI-compatible surface; Ollama also exposes a native /api/tags list).
+    ollama_base_url: str = Field(default_factory=lambda: os.environ.get("OLLAMA_BASE_URL", ""))
+    ollama_api_key: str = Field(default_factory=lambda: os.environ.get("OLLAMA_API_KEY", ""))
+    # Optional named OpenAI-compatible providers: LAIW_PROVIDER_<NAME>_URL / _KEY
+    # e.g. LAIW_PROVIDER_GROQ_URL + LAIW_PROVIDER_GROQ_KEY
+    # (parsed lazily by models.registry; never persisted or returned to clients)
+
+    # ------------------------------------------------------- model discovery
+    # Health/availability verdicts are cached for this many seconds so we never
+    # hammer a provider. Discovery (model listing) uses its own shorter TTL.
+    model_health_ttl_seconds: float = Field(default_factory=lambda: float(os.environ.get("LAIW_MODEL_HEALTH_TTL", "120")))
+    model_probe_timeout_seconds: float = Field(default_factory=lambda: float(os.environ.get("LAIW_MODEL_PROBE_TIMEOUT", "20")))
+    # A model is only marked AVAILABLE after a real minimal request succeeds.
+    model_probe_enabled: bool = Field(default_factory=lambda: os.environ.get("LAIW_MODEL_PROBE_ENABLED", "true").lower() == "true")
 
     # -------------------------------------------------------------- tools
     http_timeout_seconds: float = 25.0

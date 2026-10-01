@@ -25,7 +25,8 @@ storage/
 # Frontend build artefacts
 frontend/node_modules/
 frontend/.next/
-frontend/out/
+# The static workspace UI is committed (no build step required); only framework
+# build output is ignored.
 web-dist/
 
 # OS / editors

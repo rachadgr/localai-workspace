@@ -1,12 +1,25 @@
-"""Central ModelRegistry.
+"""Central ModelRegistry — an extensible, provider-agnostic model layer.
 
-States: AVAILABLE, UNAVAILABLE, MISCONFIGURED, DISABLED.
-Availability is *probed*, never assumed. If no chat provider is reachable the
-registry reports ``UNAVAILABLE`` and the orchestrator degrades honestly.
+The registry is the single place the Super Agent asks for models. It never
+hardcodes provider names: providers are *adapters* registered by name, each
+implementing the unified :class:`models.base.ModelAdapter` interface.
+
+States
+------
+``AVAILABLE`` / ``UNAVAILABLE`` / ``MISCONFIGURED`` / ``DISABLED`` / ``LOADING``
+/ ``ERROR``.
+
+Availability is **probed, never assumed**. Appearing in a provider's model list
+is *not* proof of usability, so a model is only marked ``AVAILABLE`` after a real
+minimal capability request succeeds. Verdicts are cached with a TTL so providers
+are not hammered. If no provider is configured the registry reports
+``UNAVAILABLE`` and the application keeps running (honest degradation).
 """
 
 from __future__ import annotations
 
+import os
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -15,111 +28,301 @@ from typing import Any
 from backend.app.core.errors import ModelUnavailableError
 from backend.app.core.observability import get_logger
 from configs.settings import settings
-from models.adapters import AnthropicAdapter, BaseChatAdapter, ChatMessage, Completion, EchoAdapter, OpenAICompatibleAdapter
+from models.base import (
+    KIND_CHAT,
+    KIND_EMBEDDING,
+    KIND_IMAGE,
+    KIND_VIDEO,
+    STATUS_AVAILABLE,
+    STATUS_DISABLED,
+    STATUS_ERROR,
+    STATUS_LOADING,
+    STATUS_MISCONFIGURED,
+    STATUS_UNAVAILABLE,
+    ChatMessage,
+    Completion,
+    EmbeddingResult,
+    HealthReport,
+    ImageResult,
+    ModelAdapter,
+    ModelCapabilities,
+    ModelDescriptor,
+    infer_capabilities,
+    infer_context,
+    infer_kind,
+)
+from models.adapters import (
+    AnthropicAdapter,
+    EchoAdapter,
+    OllamaAdapter,
+    OpenAICompatibleAdapter,
+)
 
 logger = get_logger("model_registry")
 
-STATUS_AVAILABLE = "AVAILABLE"
-STATUS_UNAVAILABLE = "UNAVAILABLE"
-STATUS_MISCONFIGURED = "MISCONFIGURED"
-STATUS_DISABLED = "DISABLED"
+# Backwards-compatible re-exports (older code imports these from the registry).
+__all__ = [
+    "ModelRegistry",
+    "ModelInfo",
+    "registry",
+    "STATUS_AVAILABLE",
+    "STATUS_UNAVAILABLE",
+    "STATUS_MISCONFIGURED",
+    "STATUS_DISABLED",
+    "STATUS_LOADING",
+    "STATUS_ERROR",
+]
+
+_KNOWN_CHAT_PREFERENCE = (
+    "gpt-5.4-mini",
+    "gpt-5-mini",
+    "gpt-5",
+    "claude-sonnet-4-5",
+    "qwen2.5",
+    "llama3.1",
+)
 
 
 @dataclass
 class ModelInfo:
+    """Rich metadata for a single model (spec-required fields)."""
+
     id: str
-    provider: str
-    kind: str = "chat"
-    status: str = STATUS_UNAVAILABLE
+    name: str = ""
+    provider: str = ""
+    type: str = KIND_CHAT  # chat | embedding | image | video | search
+    kind: str = KIND_CHAT  # alias kept for older callers/tests
     capabilities: list[str] = field(default_factory=list)
-    context_window: int = 0
+    context_length: int = 0
+    context_window: int = 0  # alias kept for older callers/tests
+    vision: bool = False
+    tools: bool = False
+    streaming: bool = False
+    local: bool = False
+    endpoint: str = ""
+    status: str = STATUS_UNAVAILABLE
+    health: dict[str, Any] = field(default_factory=dict)
+    last_checked: float = 0.0
+    error: str = ""
+    config_source: str = "environment"
     notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class ModelRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, build_adapters: bool = True) -> None:
         self._lock = threading.RLock()
-        self._adapters: dict[str, BaseChatAdapter] = {}
+        self._adapters: dict[str, ModelAdapter] = {}
         self._models: dict[str, ModelInfo] = {}
-        self._last_probe: float = 0.0
-        self._probe_ttl = 60.0
+        self._provider_status: dict[str, str] = {}
+        self._provider_error: dict[str, str] = {}
+        self._last_discovery: float = 0.0
+        self._discovery_ttl = max(5.0, float(getattr(settings, "model_health_ttl_seconds", 120.0)))
+        # Cached chat-usability verdict (real round-trip probe).
         self._chat_ready: bool | None = None
         self._chat_probe_at: float = 0.0
         self._chat_probe_reason: str = ""
-        self._build_adapters()
+        # Per-model health cache: model_id -> (HealthReport, timestamp)
+        self._health_cache: dict[str, tuple[HealthReport, float]] = {}
+        if build_adapters:
+            self._build_adapters()
 
     # ------------------------------------------------------------ adapters
     def _build_adapters(self) -> None:
+        """Instantiate every provider adapter from environment configuration."""
+        self._adapters = {}
+
+        # 1. Primary OpenAI-compatible endpoint (sandbox proxy / any OpenAI API).
         primary = OpenAICompatibleAdapter(settings.llm_base_url, settings.llm_api_key, label="openai_compatible")
         self._adapters["openai_compatible"] = primary
+
+        # 2. Anthropic Messages API.
         self._adapters["anthropic"] = AnthropicAdapter(settings.llm_anthropic_base_url, settings.llm_anthropic_api_key)
+
+        # 3. Local runtime: Ollama (native discovery) or a generic local OpenAI server.
+        ollama_url = getattr(settings, "ollama_base_url", "") or ""
+        if ollama_url:
+            self._adapters["ollama"] = OllamaAdapter(ollama_url, getattr(settings, "ollama_api_key", ""))
+
+        # 4. Optional extra named OpenAI-compatible providers (LAIW_PROVIDER_<NAME>_URL/_KEY).
+        for name, (url, key) in _extra_provider_configs().items():
+            self._adapters[name] = OpenAICompatibleAdapter(url, key, label=name)
+
+        # 5. Deterministic test adapter (DISABLED unless explicitly enabled).
         self._adapters["echo"] = EchoAdapter()
 
-    def register_adapter(self, name: str, adapter: BaseChatAdapter) -> None:
+        for name, adapter in self._adapters.items():
+            self._provider_status[name] = adapter.status() if _safe_status(adapter) else STATUS_ERROR
+
+    def register_adapter(self, name: str, adapter: ModelAdapter) -> None:
+        """Register (or replace) a provider adapter at runtime."""
         with self._lock:
             self._adapters[name] = adapter
-            self._last_probe = 0.0
+            self._last_discovery = 0.0
+            self._chat_ready = None
 
-    def get_adapter(self, model_id: str) -> BaseChatAdapter:
+    def adapters(self) -> dict[str, ModelAdapter]:
+        with self._lock:
+            return dict(self._adapters)
+
+    def get_adapter(self, model_id: str) -> ModelAdapter:
+        """Resolve the adapter for a model id (falls back sensibly)."""
         info = self._models.get(model_id)
         if info and info.provider in self._adapters:
             return self._adapters[info.provider]
-        if settings.llm_base_url and settings.llm_api_key:
-            return self._adapters["openai_compatible"]
+
+        # No discovery yet / unknown id → prefer a configured chat provider.
+        for name in ("openai_compatible", "anthropic", "ollama"):
+            adapter = self._adapters.get(name)
+            if adapter and adapter.is_configured() and _supports_chat(adapter):
+                return adapter
+        for adapter in self._adapters.values():
+            if adapter.is_configured() and _supports_chat(adapter):
+                return adapter
         echo = self._adapters.get("echo")
         if echo and echo.is_configured():
             return echo
-        raise ModelUnavailableError("No chat model provider is available")
+        raise ModelUnavailableError("No model provider is available")
 
-    # -------------------------------------------------------------- probe
+    # ----------------------------------------------------------- discovery
     def refresh(self, force: bool = False) -> dict[str, ModelInfo]:
+        """Discover models across all providers, probing each for real usability."""
         with self._lock:
-            if not force and (time.time() - self._last_probe) < self._probe_ttl and self._models:
+            if not force and (time.time() - self._last_discovery) < self._discovery_ttl and self._models:
                 return dict(self._models)
+
             models: dict[str, ModelInfo] = {}
+            provider_status: dict[str, str] = {}
+            provider_error: dict[str, str] = {}
 
-            primary = self._adapters["openai_compatible"]
-            if not primary.is_configured():
-                primary_status = STATUS_MISCONFIGURED
-                primary_models: list[str] = []
-            else:
-                try:
-                    primary_models = primary.list_models()
-                    primary_status = STATUS_AVAILABLE if primary_models else STATUS_UNAVAILABLE
-                except Exception as exc:
-                    logger.warning("primary model probe failed: %s", exc)
-                    primary_models = []
-                    primary_status = STATUS_UNAVAILABLE
+            for name, adapter in self._adapters.items():
+                status, descriptors, error = self._discover_provider(name, adapter)
+                provider_status[name] = status
+                if error:
+                    provider_error[name] = error
 
-            for model_id in primary_models:
-                models[model_id] = ModelInfo(
-                    id=model_id,
-                    provider="openai_compatible",
-                    kind=_infer_kind(model_id),
-                    status=primary_status,
-                    capabilities=_infer_capabilities(model_id),
-                    context_window=_infer_context(model_id),
-                )
+                for desc in descriptors:
+                    # Do not mark a model AVAILABLE just because it was listed.
+                    model_status = status
+                    health: dict[str, Any] = {}
+                    if status in (STATUS_AVAILABLE,):
+                        report = self._probe_model(adapter, desc, force=force)
+                        model_status = report.status
+                        health = report.to_dict()
+                        if not report.ok and report.error:
+                            provider_error.setdefault(name, report.error)
 
-            anthropic = self._adapters["anthropic"]
-            if anthropic.is_configured():
-                for model_id in anthropic.list_models():
-                    models.setdefault(
-                        model_id,
-                        ModelInfo(id=model_id, provider="anthropic", status=STATUS_AVAILABLE, capabilities=["chat", "reasoning"]),
+                    caps = ModelCapabilities.from_list(desc.capabilities)
+                    models[desc.id] = ModelInfo(
+                        id=desc.id,
+                        name=desc.id,
+                        provider=desc.provider,
+                        type=desc.kind,
+                        kind=desc.kind,
+                        capabilities=desc.capabilities,
+                        context_length=desc.context_length,
+                        context_window=desc.context_length,
+                        vision=caps.vision,
+                        tools=caps.tools,
+                        streaming=caps.streaming,
+                        local=desc.local,
+                        endpoint=desc.endpoint,
+                        status=model_status,
+                        health=health,
+                        last_checked=time.time(),
+                        error=health.get("error", ""),
+                        config_source="environment",
                     )
 
-            echo = self._adapters["echo"]
-            if echo.is_configured():
-                models["echo"] = ModelInfo(id="echo", provider="echo", status=STATUS_AVAILABLE, capabilities=["chat"], notes="deterministic test adapter")
-            else:
-                models["echo"] = ModelInfo(id="echo", provider="echo", status=STATUS_DISABLED, notes="enabled only via LAIW_ENABLE_ECHO_MODEL=true")
-
             self._models = models
-            self._last_probe = time.time()
+            self._provider_status = provider_status
+            self._provider_error = provider_error
+            self._last_discovery = time.time()
             self._persist(models)
             return dict(models)
 
+    def _discover_provider(self, name: str, adapter: ModelAdapter) -> tuple[str, list[ModelDescriptor], str]:
+        if not adapter.is_configured():
+            status = STATUS_DISABLED if isinstance(adapter, EchoAdapter) else STATUS_MISCONFIGURED
+            return status, [], "Provider is not configured"
+        try:
+            descriptors = adapter.discover()
+        except Exception as exc:  # noqa: BLE001 - classified honestly
+            logger.warning("provider %s discovery failed: %s", name, exc)
+            from models.base import classify_probe_error
+
+            return classify_probe_error(exc), [], str(exc)[:300]
+        if not descriptors:
+            return STATUS_UNAVAILABLE, [], "Provider returned no models"
+        return STATUS_AVAILABLE, descriptors, ""
+
+    def _probe_model(self, adapter: ModelAdapter, desc: ModelDescriptor, *, force: bool = False) -> HealthReport:
+        """Real capability/health request, cached with the configured TTL."""
+        if not getattr(settings, "model_probe_enabled", True):
+            # Probing disabled → report LOADING (unknown) rather than falsely AVAILABLE.
+            return HealthReport(status=STATUS_LOADING, ok=False, error="Model probing disabled")
+
+        ttl = max(5.0, float(getattr(settings, "model_health_ttl_seconds", 120.0)))
+        cached = self._health_cache.get(desc.id)
+        if cached and not force and (time.time() - cached[1]) < ttl:
+            return cached[0]
+
+        report = self._run_probe(adapter, desc)
+        self._health_cache[desc.id] = (report, time.time())
+        return report
+
+    @staticmethod
+    def _run_probe(adapter: ModelAdapter, desc: ModelDescriptor) -> HealthReport:
+        kind = desc.kind
+        try:
+            if kind == KIND_EMBEDDING:
+                adapter.embed(["ping"], model=desc.id)
+            elif kind == KIND_IMAGE:
+                # Image providers are expensive; a listing + configured provider is
+                # the strongest cheap signal we can assert without side effects.
+                if not adapter.is_configured():
+                    return HealthReport(status=STATUS_MISCONFIGURED, ok=False, error="Provider not configured")
+                return HealthReport(status=STATUS_AVAILABLE, ok=True, detail="image provider configured")
+            elif kind == KIND_VIDEO:
+                if not adapter.is_configured():
+                    return HealthReport(status=STATUS_MISCONFIGURED, ok=False, error="Provider not configured")
+                return HealthReport(status=STATUS_AVAILABLE, ok=True, detail="video provider configured")
+            else:
+                adapter.complete([ChatMessage("user", "ping")], model=desc.id, max_tokens=5)
+        except Exception as exc:  # noqa: BLE001
+            from models.base import classify_probe_error
+
+            return HealthReport(status=classify_probe_error(exc), ok=False, error=str(exc)[:300])
+        return HealthReport(status=STATUS_AVAILABLE, ok=True)
+
+    def check_model_health(self, model_id: str, force: bool = False) -> HealthReport:
+        """Probe a single model on demand (cached)."""
+        info = self.refresh().get(model_id)
+        if info is None:
+            return HealthReport(status=STATUS_UNAVAILABLE, ok=False, error=f"Unknown model '{model_id}'")
+        adapter = self._adapters.get(info.provider)
+        if adapter is None:
+            return HealthReport(status=STATUS_UNAVAILABLE, ok=False, error=f"Unknown provider '{info.provider}'")
+        desc = ModelDescriptor(
+            id=info.id,
+            provider=info.provider,
+            kind=info.type,
+            capabilities=info.capabilities,
+            context_length=info.context_length,
+            local=info.local,
+            endpoint=info.endpoint,
+        )
+        report = self._probe_model(adapter, desc, force=force)
+        if model_id in self._models:
+            self._models[model_id].status = report.status
+            self._models[model_id].health = report.to_dict()
+            self._models[model_id].last_checked = report.checked_at
+            self._models[model_id].error = report.error
+        return report
+
+    # ------------------------------------------------------------- persist
     @staticmethod
     def _persist(models: dict[str, ModelInfo]) -> None:
         try:
@@ -132,21 +335,40 @@ class ModelRegistry:
                         row = ModelRecord(id=info.id)
                         db.add(row)
                     row.provider = info.provider
-                    row.kind = info.kind
+                    row.kind = info.type
                     row.status = info.status
-                    row.context_window = info.context_window
+                    row.context_window = info.context_length
                     row.capabilities = info.capabilities
-                    row.notes = info.notes
+                    row.notes = info.error or info.notes
         except Exception as exc:  # pragma: no cover
             logger.debug("model persist skipped: %s", exc)
 
     # ----------------------------------------------------------- querying
     def list_models(self) -> list[ModelInfo]:
-        return sorted(self.refresh().values(), key=lambda m: (m.kind, m.id))
+        return sorted(self.refresh().values(), key=lambda m: (m.type, m.id))
+
+    def models_by_kind(self, kind: str, available_only: bool = True) -> list[ModelInfo]:
+        out = [m for m in self.refresh().values() if m.type == kind]
+        if available_only:
+            out = [m for m in out if m.status == STATUS_AVAILABLE]
+        return sorted(out, key=lambda m: m.id)
 
     def chat_models(self) -> list[ModelInfo]:
-        return [m for m in self.list_models() if m.kind == "chat" and m.status == STATUS_AVAILABLE]
+        return self.models_by_kind(KIND_CHAT, available_only=True)
 
+    def embedding_models(self) -> list[ModelInfo]:
+        return self.models_by_kind(KIND_EMBEDDING, available_only=True)
+
+    def image_models(self) -> list[ModelInfo]:
+        return self.models_by_kind(KIND_IMAGE, available_only=True)
+
+    def video_models(self) -> list[ModelInfo]:
+        return self.models_by_kind(KIND_VIDEO, available_only=True)
+
+    def get(self, model_id: str) -> ModelInfo | None:
+        return self.refresh().get(model_id)
+
+    # ------------------------------------------------------------- health
     def chat_available(self, force: bool = False) -> bool:
         """True only if a real completion round-trip succeeds.
 
@@ -155,23 +377,31 @@ class ModelRegistry:
         probe request and cache the verdict briefly.
         """
         with self._lock:
-            if not force and self._chat_ready is not None and (time.time() - self._chat_probe_at) < self._probe_ttl:
+            ttl = max(5.0, float(getattr(settings, "model_health_ttl_seconds", 120.0)))
+            if not force and self._chat_ready is not None and (time.time() - self._chat_probe_at) < ttl:
                 return self._chat_ready
 
-        candidate: BaseChatAdapter | None = None
+        candidate: ModelAdapter | None = None
+        model_name = ""
         try:
-            candidate = self.get_adapter(self.default_chat_model())
+            model_name = self.default_chat_model()
+            candidate = self.get_adapter(model_name)
         except Exception:
-            candidate = self._adapters.get("openai_compatible") if self._adapters["openai_compatible"].is_configured() else self._adapters.get("echo")
+            for name in ("openai_compatible", "anthropic", "ollama"):
+                adapter = self._adapters.get(name)
+                if adapter and adapter.is_configured():
+                    candidate = adapter
+                    break
+            if candidate is None:
+                candidate = self._adapters.get("echo")
 
         ready = False
         reason = ""
-        if candidate is not None and candidate.status() in (STATUS_AVAILABLE,):
-            try:
-                candidate.complete([ChatMessage("user", "ping")], model=self._probe_model_name(candidate), max_tokens=5)
-                ready = True
-            except Exception as exc:  # noqa: BLE001
-                reason = str(exc)[:200]
+        if candidate is not None and candidate.is_configured():
+            probe_model = model_name or self._probe_model_name(candidate)
+            report = candidate.health_check(probe_model)
+            ready = report.ok
+            reason = report.error
         else:
             reason = "no configured chat adapter"
 
@@ -183,14 +413,17 @@ class ModelRegistry:
             logger.info("chat availability probe failed: %s", reason)
         return ready
 
-    def _probe_model_name(self, adapter: BaseChatAdapter) -> str:
+    def _probe_model_name(self, adapter: ModelAdapter) -> str:
         try:
             return self.default_chat_model()
         except Exception:  # noqa: BLE001
-            return "echo" if adapter.name == "echo" else "gpt-5-nano"
-
-    def get(self, model_id: str) -> ModelInfo | None:
-        return self.refresh().get(model_id)
+            if adapter.name == "echo":
+                return "echo"
+            try:
+                listed = adapter.list_models()
+            except Exception:  # noqa: BLE001 - provider unreachable; no name to probe
+                return ""
+            return listed[0] if listed else ""
 
     def default_chat_model(self) -> str:
         available = self.chat_models()
@@ -199,7 +432,7 @@ class ModelRegistry:
             return settings.llm_default_model
         if settings.llm_fast_model in ids:
             return settings.llm_fast_model
-        for preferred in ("gpt-5.4-mini", "gpt-5-mini", "claude-sonnet-4-5"):
+        for preferred in _KNOWN_CHAT_PREFERENCE:
             if preferred in ids:
                 return preferred
         if available:
@@ -207,35 +440,71 @@ class ModelRegistry:
         raise ModelUnavailableError("No chat model AVAILABLE")
 
     # ---------------------------------------------------------- execution
-    def complete(self, messages: list[ChatMessage], model: str | None = None, **opts: Any) -> Completion:
+    def complete(self, messages: list[Any], model: str | None = None, **opts: Any) -> Completion:
         model = model or self.default_chat_model()
         adapter = self.get_adapter(model)
-        if adapter.status() in (STATUS_DISABLED,):
+        if adapter.status() == STATUS_DISABLED:
             raise ModelUnavailableError(f"Model '{model}' is DISABLED")
         if adapter.status() == STATUS_MISCONFIGURED:
             raise ModelUnavailableError(f"Model provider for '{model}' is MISCONFIGURED")
         return adapter.complete(_as_messages(messages), model, **opts)
 
-    def stream(self, messages: list[ChatMessage], model: str | None = None, **opts: Any):
+    def stream(self, messages: list[Any], model: str | None = None, **opts: Any):
         model = model or self.default_chat_model()
         adapter = self.get_adapter(model)
         return adapter.stream(_as_messages(messages), model, **opts)
 
+    def embed(self, texts: list[str], model: str | None = None, **opts: Any) -> EmbeddingResult:
+        model = model or self._default_embedding_model()
+        adapter = self.get_adapter(model)
+        return adapter.embed(texts, model, **opts)
+
+    def _default_embedding_model(self) -> str:
+        models = self.embedding_models()
+        if models:
+            return models[0].id
+        raise ModelUnavailableError("No embedding model AVAILABLE")
+
+    # -------------------------------------------------------------- routing
+    def router(self):
+        """Return a :class:`models.router.ModelRouter` bound to this registry."""
+        from models.router import ModelRouter
+
+        return ModelRouter(self)
+
+    def route(self, task: str, **kwargs: Any):
+        """Task-based model selection (delegates to :class:`ModelRouter`)."""
+        return self.router().select(task, **kwargs)
+
+    def resolve_model(self, task: str, explicit: str = "", **kwargs: Any) -> str | None:
+        """Resolve an explicit model if usable, else route by task requirement."""
+        return self.router().resolve(task, explicit, **kwargs)
+
+    # ------------------------------------------------------------- health
     def health(self) -> dict[str, Any]:
         models = self.refresh()
-        chat = [m for m in models.values() if m.kind == "chat"]
+        chat = [m for m in models.values() if m.type == KIND_CHAT]
         listing = [m for m in chat if m.status == STATUS_AVAILABLE]
         ready = self.chat_available()
+        providers = {}
+        for name, adapter in self._adapters.items():
+            providers[name] = {
+                "status": self._provider_status.get(name, adapter.status()),
+                "configured": adapter.is_configured(),
+                "local": getattr(adapter, "is_local", False),
+                "endpoint": adapter.endpoint_label(),
+                "error": self._provider_error.get(name, ""),
+            }
         return {
             "models_total": len(models),
             "chat_available": len(listing) if ready else 0,
             "chat_listed": len(listing),
             "chat_usable": ready,
             "unavailable_reason": self._chat_probe_reason,
-            "providers": {name: adapter.status() for name, adapter in self._adapters.items()},
+            "providers": providers,
             "default_model": listing[0].id if listing else None,
             "status": STATUS_AVAILABLE if ready else STATUS_UNAVAILABLE,
-            "models": [asdict(m) for m in sorted(models.values(), key=lambda x: x.id)],
+            "models": [m.to_dict() for m in sorted(models.values(), key=lambda x: x.id)],
         }
 
 
@@ -249,38 +518,38 @@ def _as_messages(messages: list[Any]) -> list[ChatMessage]:
     return out
 
 
-def _infer_kind(model_id: str) -> str:
-    lower = model_id.lower()
-    if any(t in lower for t in ("embed", "embedding", "bge", "text-embedding")):
-        return "embedding"
-    if any(t in lower for t in ("dall", "image", "flux", "stable-diffusion", "imagen", "midjourney")):
-        return "image"
-    if any(t in lower for t in ("search", "rerank")):
-        return "search"
-    return "chat"
+def _supports_chat(adapter: ModelAdapter) -> bool:
+    try:
+        return "chat" in (adapter.capabilities("chat").to_list())
+    except Exception:  # noqa: BLE001
+        return True
 
 
-def _infer_capabilities(model_id: str) -> list[str]:
-    lower = model_id.lower()
-    caps = ["chat", "reasoning"]
-    if "codex" in lower or "code" in lower:
-        caps.append("code")
-    if "vision" in lower or "-v" in lower or "gpt-5" in lower or "claude" in lower:
-        caps.append("vision")
-    if any(t in lower for t in ("gpt-5", "claude", "deep-seek", "luna", "sol", "astra")):
-        caps.append("long-context")
-    return caps
+def _safe_status(adapter: ModelAdapter) -> bool:
+    try:
+        adapter.status()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
-def _infer_context(model_id: str) -> int:
-    lower = model_id.lower()
-    if "1m" in lower:
-        return 1_000_000
-    if any(t in lower for t in ("gpt-5", "claude-opus", "claude-sonnet", "deep-seek")):
-        return 200_000
-    return 128_000
+_EXTRA_PROVIDER_RE = re.compile(r"^LAIW_PROVIDER_([A-Z0-9_]+)_(URL|KEY)$")
+
+
+def _extra_provider_configs() -> dict[str, tuple[str, str]]:
+    """Parse optional ``LAIW_PROVIDER_<NAME>_URL/_KEY`` environment pairs."""
+    found: dict[str, dict[str, str]] = {}
+    for key, value in os.environ.items():
+        match = _EXTRA_PROVIDER_RE.match(key)
+        if not match or not value:
+            continue
+        name, field_name = match.group(1), match.group(2)
+        found.setdefault(name, {})[field_name] = value
+    out: dict[str, tuple[str, str]] = {}
+    for name, fields in found.items():
+        if fields.get("URL"):
+            out[name.lower()] = (fields["URL"], fields.get("KEY", ""))
+    return out
 
 
 registry = ModelRegistry()
-
-__all__ = ["ModelRegistry", "ModelInfo", "registry", "STATUS_AVAILABLE", "STATUS_UNAVAILABLE", "STATUS_MISCONFIGURED", "STATUS_DISABLED"]

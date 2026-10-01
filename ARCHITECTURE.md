@@ -56,10 +56,39 @@ permissions, cost_estimate, availability(), execute(), validate()`
 
 ## Model contract
 
-`ModelRegistry` (`models/registry.py`) states: `AVAILABLE / UNAVAILABLE /
-MISCONFIGURED / DISABLED`. Because a provider can list models yet refuse
-completions, `chat_available()` performs a real round-trip probe and caches the
-verdict briefly. Availability is never assumed.
+The model layer is a **production-ready, extensible Model Provider system**
+(`models/`). The Super Agent never hardcodes provider names.
+
+- **Unified interface** — `models/base.py::ModelAdapter` defines one contract with
+  chat, streaming, tool calling, vision, embeddings, image generation and
+  (forward-looking) video generation. Unsupported operations raise
+  `ModelUnavailableError`; they are never fabricated.
+- **Provider adapters** (`models/adapters.py`):
+  - `OpenAICompatibleAdapter` — any OpenAI-compatible HTTP API (the sandbox proxy,
+    Groq, Together, vLLM, LM Studio, llama.cpp server…).
+  - `AnthropicAdapter` — Anthropic Messages API.
+  - `OllamaAdapter` — a local Ollama runtime (native `/api/tags` discovery + `/v1`
+    chat/embeddings). Other local OpenAI-compatible servers attach the same way.
+  - `EchoAdapter` — deterministic, offline, DISABLED unless `LAIW_ENABLE_ECHO_MODEL=true`.
+- **Registry** (`models/registry.py::ModelRegistry`) — discovers models across all
+  providers and probes each with a **real minimal request** before marking it
+  `AVAILABLE`. States: `AVAILABLE / UNAVAILABLE / MISCONFIGURED / DISABLED /
+  LOADING / ERROR`. Rich metadata per model: `id, name, provider, type,
+  capabilities, context_length, vision, tools, streaming, local, endpoint, status,
+  health, last_checked, error, config_source`. Health verdicts are **cached with a
+  TTL** (`LAIW_MODEL_HEALTH_TTL`) so providers are not hammered. If no provider is
+  configured the registry reports `UNAVAILABLE` and the app keeps running.
+- **Router** (`models/router.py::ModelRouter`) — selects models by **task
+  requirement**, not provider name: `chat→LLM`, `code→coding/tool-use`,
+  `document→long-context LLM`, `vision→vision model`, `image→image model`,
+  `embedding→embedding model`, `video→video model`. It excludes any model that is
+  not `AVAILABLE` and applies a **deterministic fallback ordering**
+  (capability score, then provider/id).
+
+Provider configuration is environment-only (`.env.example`): `OPENAI_BASE_URL`,
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OLLAMA_BASE_URL`, and optional
+`LAIW_PROVIDER_<NAME>_URL/_KEY` pairs. Secrets are never stored in the database,
+never returned by the API and never rendered in the frontend.
 
 ## Storage
 

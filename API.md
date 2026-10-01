@@ -5,10 +5,28 @@ Base path: `/api`. Auth: `Authorization: Bearer <jwt>` (except health/version an
 ## System
 - `GET /api/health` — overall status, model usability, tool counts
 - `GET /api/version`
-- `GET /api/models` — registry health (`chat_usable`, provider states, model list)
 - `GET /api/tools` — tool catalog with schemas + availability
 - `GET /api/settings` — non-secret configuration
 - `GET /api/observability/events?limit=` — recent observations + live events
+
+## Models & Providers
+- `GET /api/models` — registry health: overall status, `chat_usable`, provider
+  states, and the full model list with `id, name, provider, type, capabilities,
+  context_length, vision, tools, streaming, local, endpoint, status, health,
+  last_checked, error, config_source`. **Never includes API keys.**
+- `GET /api/models/providers` — per-provider `{status, configured, local, endpoint, error}`
+- `GET /api/models/router` — deterministic routing decision for each task class
+  (`chat, code, document, vision, tools, reasoning, image, embedding, video`)
+- `GET /api/models/{id}` — single model metadata
+- `GET /api/models/{id}/health?force=` — real health probe for one model (cached)
+- `POST /api/models/test-connection` `{provider?, model?}` — safe connection test.
+  Performs a **real minimal request** per configured provider and returns
+  `{provider, configured, status, ok, model, latency_ms, error, endpoint, local}`.
+  All diagnostics are **redacted** (`secrets_exposed: false`).
+
+Provider states: `AVAILABLE | UNAVAILABLE | MISCONFIGURED | DISABLED | LOADING | ERROR`.
+A model is only `AVAILABLE` after a real probe succeeds — appearing in a provider's
+model list is never treated as proof of usability.
 
 ## Auth
 - `POST /api/auth/register` `{email, password, display_name?}` → `{access_token, user}`
