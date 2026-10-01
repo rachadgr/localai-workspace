@@ -19,6 +19,7 @@ from models.base import (  # noqa: F401
     CAP_TOOLS,
     CAP_VIDEO_GENERATION,
     CAP_VISION,
+    COST_TIER_UNKNOWN,
     KIND_CHAT,
     KIND_EMBEDDING,
     KIND_IMAGE,
@@ -29,6 +30,7 @@ from models.base import (  # noqa: F401
     STATUS_ERROR,
     STATUS_LOADING,
     STATUS_MISCONFIGURED,
+    STATUS_NOT_CONFIGURED,
     STATUS_UNAVAILABLE,
     ChatMessage,
     Completion,
@@ -41,6 +43,7 @@ from models.base import (  # noqa: F401
     ToolCall,
     VideoResult,
 )
+from models.catalog import ModelCatalogEntry, catalog_entries, get_catalog_entry  # noqa: F401
 from models.registry import ModelInfo, ModelRegistry, registry  # noqa: F401
 from models.router import ModelRouter, RoutingDecision  # noqa: F401
 
@@ -49,6 +52,7 @@ __all__ = [
     "ModelCapabilities",
     "ModelDescriptor",
     "ModelInfo",
+    "ModelCatalogEntry",
     "ModelRegistry",
     "ModelRouter",
     "RoutingDecision",
@@ -60,10 +64,14 @@ __all__ = [
     "ToolCall",
     "HealthReport",
     "registry",
+    "catalog_entries",
+    "get_catalog_entry",
     "STATUS_AVAILABLE",
     "STATUS_UNAVAILABLE",
     "STATUS_MISCONFIGURED",
     "STATUS_DISABLED",
     "STATUS_LOADING",
     "STATUS_ERROR",
+    "STATUS_NOT_CONFIGURED",
+    "COST_TIER_UNKNOWN",
 ]

@@ -59,6 +59,9 @@ class TaskRequirement:
     kind: str
     preferred: tuple[str, ...] = ()
     context_min: int = 0
+    #: Capabilities a candidate **must** carry. This is a hard gate: it stops the
+    #: router from ever sending an image/video/vision task to a chat-only model.
+    required: tuple[str, ...] = ()
 
 
 TASK_REQUIREMENTS: dict[str, TaskRequirement] = {
@@ -68,18 +71,18 @@ TASK_REQUIREMENTS: dict[str, TaskRequirement] = {
     TASK_CODE: TaskRequirement(KIND_CHAT, preferred=(CAP_CODE, CAP_TOOLS, CAP_REASONING)),
     # document synthesis → long-context LLM
     TASK_DOCUMENT: TaskRequirement(KIND_CHAT, preferred=(CAP_LONG_CONTEXT, CAP_REASONING), context_min=32_000),
-    # vision analysis → vision model
-    TASK_VISION: TaskRequirement(KIND_CHAT, preferred=(CAP_VISION,)),
+    # vision analysis → a model that *actually* accepts image input (hard gate)
+    TASK_VISION: TaskRequirement(KIND_CHAT, preferred=(CAP_VISION,), required=(CAP_VISION,)),
     # tool calling → tools model
     TASK_TOOLS: TaskRequirement(KIND_CHAT, preferred=(CAP_TOOLS, CAP_REASONING)),
     # deep reasoning → reasoning model
     TASK_REASONING: TaskRequirement(KIND_CHAT, preferred=(CAP_REASONING, CAP_LONG_CONTEXT)),
-    # image generation → image model
-    TASK_IMAGE: TaskRequirement(KIND_IMAGE, preferred=(CAP_IMAGE_GENERATION,)),
+    # image generation → a model that *actually* generates images (hard gate)
+    TASK_IMAGE: TaskRequirement(KIND_IMAGE, preferred=(CAP_IMAGE_GENERATION,), required=(CAP_IMAGE_GENERATION,)),
     # embedding → embedding model
-    TASK_EMBEDDING: TaskRequirement(KIND_EMBEDDING, preferred=(CAP_EMBEDDINGS,)),
-    # video generation → video model
-    TASK_VIDEO: TaskRequirement(KIND_VIDEO, preferred=(CAP_VIDEO_GENERATION,)),
+    TASK_EMBEDDING: TaskRequirement(KIND_EMBEDDING, preferred=(CAP_EMBEDDINGS,), required=(CAP_EMBEDDINGS,)),
+    # video generation → a model that *actually* generates video (hard gate)
+    TASK_VIDEO: TaskRequirement(KIND_VIDEO, preferred=(CAP_VIDEO_GENERATION,), required=(CAP_VIDEO_GENERATION,)),
 }
 
 
@@ -139,6 +142,7 @@ class ModelRouter:
             if m.status == STATUS_AVAILABLE
             and m.type == requirement.kind
             and m.id not in exclude
+            and _satisfies_required(m, requirement)
         ]
         if requirement.context_min:
             usable = [m for m in usable if (m.context_length or 0) >= requirement.context_min] or usable
@@ -164,7 +168,13 @@ class ModelRouter:
         registry = self.registry
         requirement = TASK_REQUIREMENTS.get(task, TaskRequirement(KIND_CHAT))
         models = registry.refresh(force=force_refresh)
-        usable = [m for m in models.values() if m.status == STATUS_AVAILABLE and m.type == requirement.kind]
+        usable = [
+            m
+            for m in models.values()
+            if m.status == STATUS_AVAILABLE
+            and m.type == requirement.kind
+            and _satisfies_required(m, requirement)
+        ]
         ordered = sorted(usable, key=lambda m: self._score(m, requirement, prefer_local))
         return [m.id for m in ordered]
 
@@ -191,6 +201,19 @@ class ModelRouter:
         local_rank = 0 if (prefer_local and model.local) else (1 if prefer_local else 0)
         # Negative preference so higher hits sort first; stable tiebreak by provider/id.
         return (-preference_hits, local_rank, model.provider or "", model.id or "")
+
+
+def _satisfies_required(model: Any, requirement: TaskRequirement) -> bool:
+    """True when ``model`` carries **every** capability the task requires.
+
+    A task with no ``required`` capabilities imposes no extra gate (backwards
+    compatible). This is what stops a chat-only model from being routed an
+    image / video / vision task.
+    """
+    if not requirement.required:
+        return True
+    caps = set(model.capabilities or [])
+    return all(cap in caps for cap in requirement.required)
 
 
 __all__ = [

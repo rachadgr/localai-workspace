@@ -29,6 +29,7 @@ from backend.app.core.errors import ModelUnavailableError
 from backend.app.core.observability import get_logger
 from configs.settings import settings
 from models.base import (
+    COST_TIER_UNKNOWN,
     KIND_CHAT,
     KIND_EMBEDDING,
     KIND_IMAGE,
@@ -38,6 +39,7 @@ from models.base import (
     STATUS_ERROR,
     STATUS_LOADING,
     STATUS_MISCONFIGURED,
+    STATUS_NOT_CONFIGURED,
     STATUS_UNAVAILABLE,
     ChatMessage,
     Completion,
@@ -50,6 +52,7 @@ from models.base import (
     infer_capabilities,
     infer_context,
     infer_kind,
+    infer_modality,
 )
 from models.adapters import (
     AnthropicAdapter,
@@ -57,6 +60,7 @@ from models.adapters import (
     OllamaAdapter,
     OpenAICompatibleAdapter,
 )
+from models.catalog import ModelCatalogEntry, catalog_entries, get_catalog_entry
 
 logger = get_logger("model_registry")
 
@@ -71,6 +75,7 @@ __all__ = [
     "STATUS_DISABLED",
     "STATUS_LOADING",
     "STATUS_ERROR",
+    "STATUS_NOT_CONFIGURED",
 ]
 
 _KNOWN_CHAT_PREFERENCE = (
@@ -85,7 +90,12 @@ _KNOWN_CHAT_PREFERENCE = (
 
 @dataclass
 class ModelInfo:
-    """Rich metadata for a single model (spec-required fields)."""
+    """Rich metadata for a single model (spec-required fields).
+
+    ``catalog`` is ``True`` when the row originates from the static model
+    catalog and ``False`` when it was produced purely by runtime discovery.
+    The catalog *enriches* metadata but never overrides the probed ``status``.
+    """
 
     id: str
     name: str = ""
@@ -106,6 +116,12 @@ class ModelInfo:
     error: str = ""
     config_source: str = "environment"
     notes: str = ""
+    #: Catalog enrichment (unified metadata vocabulary).
+    family: str = ""
+    modality: list[str] = field(default_factory=list)
+    reasoning: bool = False
+    cost_tier: str = COST_TIER_UNKNOWN
+    catalog: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -214,26 +230,11 @@ class ModelRegistry:
                         if not report.ok and report.error:
                             provider_error.setdefault(name, report.error)
 
-                    caps = ModelCapabilities.from_list(desc.capabilities)
-                    models[desc.id] = ModelInfo(
-                        id=desc.id,
-                        name=desc.id,
-                        provider=desc.provider,
-                        type=desc.kind,
-                        kind=desc.kind,
-                        capabilities=desc.capabilities,
-                        context_length=desc.context_length,
-                        context_window=desc.context_length,
-                        vision=caps.vision,
-                        tools=caps.tools,
-                        streaming=caps.streaming,
-                        local=desc.local,
-                        endpoint=desc.endpoint,
-                        status=model_status,
+                    models[desc.id] = self._build_model_info(
+                        desc,
+                        model_status=model_status,
                         health=health,
-                        last_checked=time.time(),
-                        error=health.get("error", ""),
-                        config_source="environment",
+                        endpoint=desc.endpoint or self._endpoint_for(desc.provider),
                     )
 
             self._models = models
@@ -242,6 +243,100 @@ class ModelRegistry:
             self._last_discovery = time.time()
             self._persist(models)
             return dict(models)
+
+    def _endpoint_for(self, provider: str) -> str:
+        """Display-safe endpoint label for a provider (host only, never secrets)."""
+        adapter = self._adapters.get(provider)
+        if adapter is None:
+            return ""
+        try:
+            return adapter.endpoint_label()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _build_model_info(
+        self,
+        desc: ModelDescriptor,
+        *,
+        model_status: str,
+        health: dict[str, Any],
+        endpoint: str,
+    ) -> ModelInfo:
+        """Build a :class:`ModelInfo` from a discovered descriptor.
+
+        Catalog metadata (``family`` / ``reasoning`` / ``cost_tier`` / canonical
+        ``name`` / ``notes``) is *merged in* when the id is known — it can enrich a
+        discovered model but **never** overrides its probed ``status``.
+        """
+        caps = ModelCapabilities.from_list(desc.capabilities)
+        info = ModelInfo(
+            id=desc.id,
+            name=desc.id,
+            provider=desc.provider,
+            type=desc.kind,
+            kind=desc.kind,
+            capabilities=list(desc.capabilities),
+            context_length=desc.context_length,
+            context_window=desc.context_length,
+            vision=caps.vision,
+            tools=caps.tools,
+            streaming=caps.streaming,
+            local=desc.local,
+            endpoint=endpoint,
+            status=model_status,
+            health=health,
+            last_checked=time.time(),
+            error=health.get("error", ""),
+            config_source="environment",
+            modality=list(infer_modality(desc.kind, vision=caps.vision)),
+        )
+        entry = get_catalog_entry(desc.id)
+        if entry is not None:
+            self._apply_catalog_metadata(info, entry)
+        return info
+
+    @staticmethod
+    def _apply_catalog_metadata(info: ModelInfo, entry: ModelCatalogEntry) -> None:
+        """Copy declared catalog metadata onto ``info`` (status is left untouched)."""
+        info.catalog = True
+        info.family = entry.family or info.family
+        info.name = entry.name or info.name
+        info.cost_tier = entry.cost_tier
+        info.reasoning = entry.reasoning
+        if not info.modality:
+            info.modality = list(entry.modality)
+        if not info.notes:
+            info.notes = entry.notes
+
+    @staticmethod
+    def _catalog_model_info(entry: ModelCatalogEntry, endpoint: str = "") -> ModelInfo:
+        """A ``NOT_CONFIGURED`` placeholder for a known-but-undiscovered model."""
+        return ModelInfo(
+            id=entry.id,
+            name=entry.name,
+            provider=entry.provider,
+            type=entry.kind,
+            kind=entry.kind,
+            capabilities=list(entry.capabilities),
+            context_length=entry.context_window,
+            context_window=entry.context_window,
+            vision=entry.vision,
+            tools=entry.tools,
+            streaming=entry.streaming,
+            local=entry.local,
+            endpoint=endpoint,
+            status=STATUS_NOT_CONFIGURED,
+            health={},
+            last_checked=0.0,
+            error="",
+            config_source="catalog",
+            notes=entry.notes,
+            family=entry.family,
+            modality=list(entry.modality),
+            reasoning=entry.reasoning,
+            cost_tier=entry.cost_tier,
+            catalog=True,
+        )
 
     def _discover_provider(self, name: str, adapter: ModelAdapter) -> tuple[str, list[ModelDescriptor], str]:
         if not adapter.is_configured():
@@ -367,6 +462,34 @@ class ModelRegistry:
 
     def get(self, model_id: str) -> ModelInfo | None:
         return self.refresh().get(model_id)
+
+    # ------------------------------------------------------------- catalog
+    def catalog(self) -> list[ModelInfo]:
+        """Declared catalog models merged with the **real** runtime state.
+
+        For every catalog entry:
+
+        * if the model was discovered at runtime, its probed ``status`` /
+          ``health`` / ``endpoint`` are used (the catalog only enriches metadata);
+        * otherwise the entry is reported as ``NOT_CONFIGURED`` — it is *known*
+          but not installed/reachable, and is never falsely ``AVAILABLE``.
+
+        The catalog is deliberately separate from runtime discovery: this method
+        never triggers a probe, never downloads weights and never calls a cloud API.
+        """
+        runtime = self.refresh()
+        merged: list[ModelInfo] = []
+        for entry in catalog_entries():
+            live = runtime.get(entry.id)
+            if live is not None:
+                merged.append(live)
+                continue
+            merged.append(self._catalog_model_info(entry, self._endpoint_for(entry.provider)))
+        return merged
+
+    def get_catalog_entry(self, model_id: str) -> ModelInfo | None:
+        """Return the merged catalog view for a single model id."""
+        return next((m for m in self.catalog() if m.id == model_id), None)
 
     # ------------------------------------------------------------- health
     def chat_available(self, force: bool = False) -> bool:

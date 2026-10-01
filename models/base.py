@@ -35,6 +35,12 @@ STATUS_MISCONFIGURED = "MISCONFIGURED"
 STATUS_DISABLED = "DISABLED"
 STATUS_LOADING = "LOADING"
 STATUS_ERROR = "ERROR"
+#: A *known catalog* model that is not installed / reachable on this instance and
+#: for which no provider is wired up yet. It is intentionally distinct from
+#: ``MISCONFIGURED`` (a configured provider whose credentials are wrong) and from
+#: ``UNAVAILABLE`` (a configured provider that failed a real request). A model is
+#: never ``AVAILABLE`` just because it exists in the catalog.
+STATUS_NOT_CONFIGURED = "NOT_CONFIGURED"
 
 ALL_STATUSES = (
     STATUS_AVAILABLE,
@@ -43,6 +49,7 @@ ALL_STATUSES = (
     STATUS_DISABLED,
     STATUS_LOADING,
     STATUS_ERROR,
+    STATUS_NOT_CONFIGURED,
 )
 
 #: A model is *usable* only in this state.
@@ -69,6 +76,65 @@ KIND_EMBEDDING = "embedding"
 KIND_IMAGE = "image"
 KIND_VIDEO = "video"
 KIND_SEARCH = "search"
+
+# --------------------------------------------------------------------------- #
+# Modality vocabulary (what a model consumes / produces)
+# --------------------------------------------------------------------------- #
+#: Input modalities a model can *consume*.
+MODALITY_TEXT = "text"
+MODALITY_IMAGE = "image"
+MODALITY_AUDIO = "audio"
+MODALITY_VIDEO = "video"
+#: Output modalities a model can *produce*.
+MODALITY_EMBEDDING = "embedding"
+
+ALL_MODALITIES = (
+    MODALITY_TEXT,
+    MODALITY_IMAGE,
+    MODALITY_AUDIO,
+    MODALITY_VIDEO,
+    MODALITY_EMBEDDING,
+)
+
+#: Map a model "kind" to its primary output modality.
+_KIND_TO_OUTPUT_MODALITY = {
+    KIND_CHAT: MODALITY_TEXT,
+    KIND_EMBEDDING: MODALITY_EMBEDDING,
+    KIND_IMAGE: MODALITY_IMAGE,
+    KIND_VIDEO: MODALITY_VIDEO,
+    KIND_SEARCH: MODALITY_TEXT,
+}
+
+# --------------------------------------------------------------------------- #
+# Cost tier vocabulary (coarse, deployment-level; never a price promise)
+# --------------------------------------------------------------------------- #
+COST_TIER_FREE = "free"
+COST_TIER_LOW = "low"
+COST_TIER_MEDIUM = "medium"
+COST_TIER_HIGH = "high"
+COST_TIER_UNKNOWN = "unknown"
+
+ALL_COST_TIERS = (
+    COST_TIER_FREE,
+    COST_TIER_LOW,
+    COST_TIER_MEDIUM,
+    COST_TIER_HIGH,
+    COST_TIER_UNKNOWN,
+)
+
+
+def infer_modality(kind: str, *, vision: bool = False) -> list[str]:
+    """Return the ``[input..., output]`` modality list for a kind + vision flag.
+
+    Kept intentionally simple so metadata and runtime discovery agree.
+    """
+    inputs = [MODALITY_TEXT]
+    if vision and kind == KIND_CHAT:
+        inputs.append(MODALITY_IMAGE)
+    output = _KIND_TO_OUTPUT_MODALITY.get(kind, MODALITY_TEXT)
+    if output == MODALITY_TEXT:
+        return inputs
+    return inputs + [output]
 
 
 @dataclass
@@ -231,7 +297,12 @@ class HealthReport:
 
 @dataclass
 class ModelDescriptor:
-    """A discovered model, before/around probing."""
+    """A discovered model, before/around probing.
+
+    The trailing fields are optional catalogue metadata: runtime discovery leaves
+    them at their defaults (no fabrication), while the static catalog can supply
+    them so the registry can *merge* declared metadata with the real runtime state.
+    """
 
     id: str
     provider: str
@@ -241,6 +312,12 @@ class ModelDescriptor:
     local: bool = False
     endpoint: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    #: Optional catalogue enrichment (empty when only runtime discovery ran).
+    name: str = ""
+    family: str = ""
+    modality: list[str] = field(default_factory=list)
+    reasoning: bool = False
+    cost_tier: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -399,8 +476,8 @@ def classify_http_status(status_code: int) -> str:
 # Heuristic inference (used when a provider gives no metadata)
 # --------------------------------------------------------------------------- #
 _EMBEDDING_MARKERS = ("embed", "embedding", "bge", "text-embedding", "nomic-embed", "mxbai")
-_IMAGE_MARKERS = ("dall", "dalle", "image", "flux", "stable-diffusion", "sd-", "imagen", "midjourney", "sdxl")
-_VIDEO_MARKERS = ("video", "veo", "sora", "runway", "kling", "pika", "luma")
+_IMAGE_MARKERS = ("dall", "dalle", "image", "flux", "stable-diffusion", "sd-", "imagen", "midjourney", "sdxl", "seedream", "playground-v")
+_VIDEO_MARKERS = ("video", "veo", "sora", "runway", "kling", "pika", "luma", "t2v", "i2v", "wan", "hunyuan", "cogvideo", "seedance", "hailuo", "ltx")
 _VISION_MARKERS = ("vision", "-vl", "vl-", "llava", "gpt-4o", "gpt-5", "gemini", "claude-3", "claude-4", "qwen-vl", "minicpm-v")
 _CODE_MARKERS = ("code", "coder", "codex", "deepseek-coder", "starcoder", "codestral")
 _REASONING_MARKERS = ("o1", "o3", "o4", "reason", "thinking", "r1", "qwq", "gpt-5", "deep-seek", "deepseek-r")
@@ -461,8 +538,22 @@ __all__ = [
     "STATUS_DISABLED",
     "STATUS_LOADING",
     "STATUS_ERROR",
+    "STATUS_NOT_CONFIGURED",
     "ALL_STATUSES",
     "USABLE_STATUSES",
+    "MODALITY_TEXT",
+    "MODALITY_IMAGE",
+    "MODALITY_AUDIO",
+    "MODALITY_VIDEO",
+    "MODALITY_EMBEDDING",
+    "ALL_MODALITIES",
+    "COST_TIER_FREE",
+    "COST_TIER_LOW",
+    "COST_TIER_MEDIUM",
+    "COST_TIER_HIGH",
+    "COST_TIER_UNKNOWN",
+    "ALL_COST_TIERS",
+    "infer_modality",
     "CAP_CHAT",
     "CAP_STREAMING",
     "CAP_TOOLS",
