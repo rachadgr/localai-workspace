@@ -45,6 +45,19 @@ from models.base import (  # noqa: F401
     VideoResult,
 )
 from models.catalog import ModelCatalogEntry, catalog_entries, get_catalog_entry  # noqa: F401
+from models.local import (  # noqa: F401
+    ACTIVATION_ACTIVE,
+    ACTIVATION_DISABLED,
+    ACTIVATION_INSTALLED,
+    ACTIVATION_NOT_INSTALLED,
+    ACTIVATION_OUT_OF_SCOPE,
+    LocalModelActivation,
+    LocalModelOutcome,
+    available_local_models,
+    classify_local_activation,
+    installed_local_ids,
+    local_activation_summary,
+)
 from models.registry import ModelInfo, ModelRegistry, registry  # noqa: F401
 from models.router import (  # noqa: F401
     OUTCOME_NO_CAPABLE_MODEL,
@@ -84,6 +97,17 @@ __all__ = [
     "registry",
     "catalog_entries",
     "get_catalog_entry",
+    "LocalModelActivation",
+    "LocalModelOutcome",
+    "classify_local_activation",
+    "installed_local_ids",
+    "available_local_models",
+    "local_activation_summary",
+    "ACTIVATION_ACTIVE",
+    "ACTIVATION_INSTALLED",
+    "ACTIVATION_NOT_INSTALLED",
+    "ACTIVATION_DISABLED",
+    "ACTIVATION_OUT_OF_SCOPE",
     "STATUS_AVAILABLE",
     "STATUS_UNAVAILABLE",
     "STATUS_MISCONFIGURED",

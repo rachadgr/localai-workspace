@@ -95,6 +95,32 @@ class Settings(BaseSettings):
     # A model is only marked AVAILABLE after a real minimal request succeeds.
     model_probe_enabled: bool = Field(default_factory=lambda: os.environ.get("LAIW_MODEL_PROBE_ENABLED", "true").lower() == "true")
 
+    # -------------------------------------------------- local model activation
+    # Local Model Activation *bridges the declarative catalog with what is
+    # actually installed* on the local runtime (Ollama). It is purely additive and
+    # needs **no API key, no cloud provider and no weight download**:
+    #
+    # * discovery only *lists* what the local runtime already has (``/api/tags``);
+    # * catalog ids that are absent from that list are reported ``NOT_INSTALLED``
+    #   and stay ``NOT_CONFIGURED``; nothing is ever pulled/downloaded;
+    # * only ids that are both installed **and** known to the catalog are probed
+    #   with one tiny real request, and become ``AVAILABLE`` **only** when that
+    #   probe truly succeeds.
+    local_activation_enabled: bool = Field(
+        default_factory=lambda: os.environ.get("LAIW_LOCAL_ACTIVATION_ENABLED", "true").lower() == "true"
+    )
+    #: Probe every installed local model (each model genuinely served locally).
+    #: When ``false`` only the preferred model below is probed, so discovery stays
+    #: fast even on a host that has many large local models installed.
+    local_activation_probe_all: bool = Field(
+        default_factory=lambda: os.environ.get("LAIW_LOCAL_ACTIVATION_PROBE_ALL", "true").lower() == "true"
+    )
+    #: Model preferred by local activation when several installed models qualify.
+    #: Never downloaded — it is only ever used to *pick among installed models*.
+    local_activation_preferred_model: str = Field(
+        default_factory=lambda: os.environ.get("LAIW_LOCAL_ACTIVATION_PREFERRED_MODEL", "qwen3:4b")
+    )
+
     # -------------------------------------------------------------- tools
     http_timeout_seconds: float = 25.0
     max_upload_mb: int = Field(default_factory=lambda: int(os.environ.get("LAIW_MAX_UPLOAD_MB", "25")))

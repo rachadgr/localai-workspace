@@ -297,14 +297,29 @@ class ModelRegistry:
 
     @staticmethod
     def _apply_catalog_metadata(info: ModelInfo, entry: ModelCatalogEntry) -> None:
-        """Copy declared catalog metadata onto ``info`` (status is left untouched)."""
+        """Copy declared catalog metadata onto ``info`` (status is left untouched).
+
+        The catalog is the *declared* source of truth for descriptive metadata, so
+        for a catalog-known model we adopt its declared capability vocabulary —
+        ``capabilities``/``modality``/``reasoning``/``vision``/``tools`` — in place
+        of the coarse id heuristic. This is what lets a declared multimodal /
+        reasoning model route correctly once it is ``AVAILABLE`` (e.g. ``qwen3:4b``
+        carries ``reasoning``, which the id heuristic cannot infer).
+
+        The probed ``status`` (and ``health``/``endpoint``/``last_checked``) are
+        runtime facts and are **never** touched here, so catalog metadata can never
+        fabricate availability or contradict a failed probe.
+        """
         info.catalog = True
         info.family = entry.family or info.family
         info.name = entry.name or info.name
         info.cost_tier = entry.cost_tier
         info.reasoning = entry.reasoning
-        if not info.modality:
-            info.modality = list(entry.modality)
+        info.vision = entry.vision
+        info.tools = entry.tools
+        # Catalog capabilities replace the id-heuristic ones for a known model.
+        info.capabilities = list(entry.capabilities)
+        info.modality = list(entry.modality)
         if not info.notes:
             info.notes = entry.notes
 
@@ -490,6 +505,24 @@ class ModelRegistry:
     def get_catalog_entry(self, model_id: str) -> ModelInfo | None:
         """Return the merged catalog view for a single model id."""
         return next((m for m in self.catalog() if m.id == model_id), None)
+
+    # ------------------------------------------------- local model activation
+    def local_activation(self, *, force: bool = False):
+        """Return a :class:`models.local.LocalModelActivation` bound to this registry.
+
+        Local Model Activation reports which *local* catalog models are actually
+        installed and genuinely usable (installed + a real successful probe). It is
+        additive, needs no API key / cloud provider, adds no provider round-trip of
+        its own (it reuses this registry's cached discovery + probes) and **never**
+        downloads weights.
+        """
+        from models.local import LocalModelActivation
+
+        return LocalModelActivation(self)
+
+    def local_activation_summary(self, *, force: bool = False) -> dict[str, Any]:
+        """Compact local-activation report (installed / active / available ids)."""
+        return self.local_activation().summary(force=force)
 
     # ------------------------------------------------------------- health
     def chat_available(self, force: bool = False) -> bool:

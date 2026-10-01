@@ -185,6 +185,36 @@ def list_model_catalog(_: User = Depends(get_current_user)) -> dict[str, Any]:
     }
 
 
+@router.get("/models/local/activation", tags=["models"])
+def local_model_activation(force: bool = False, _: User = Depends(get_current_user)) -> dict[str, Any]:
+    """**Local Model Activation** — which locally-declared models are actually usable.
+
+    Additive, read-only view that answers the operational question on top of the
+    catalog + task routing: *which models declared for the local runtime are
+    physically installed here, and which of those are genuinely usable right now?*
+
+    Honesty rules:
+
+    * **local only** — cloud / hosted catalog ids are never touched;
+    * **no downloads** — a declared-but-absent model is ``NOT_INSTALLED`` and keeps
+      ``NOT_CONFIGURED``; nothing is ever pulled;
+    * ``ACTIVE`` (runtime ``AVAILABLE``) is only reported after a **real** probe
+      succeeds; an installed-but-failing model is ``INSTALLED``, not usable;
+    * the probed runtime ``status`` is authoritative and is never fabricated;
+    * no credentials/tokens/endpoints are returned (``secrets_exposed: false``).
+
+    Performs no new provider round-trip beyond the registry's own cached discovery
+    and TTL-cached probes; ``force=true`` only asks the registry to re-probe.
+    """
+    summary = model_registry.local_activation_summary(force=force)
+    # Redact any probe error strings defensively — endpoints are never returned
+    # here, but error text can echo a URL/host; keep the no-secrets guarantee.
+    for model in summary.get("models", []):
+        if model.get("probe_error"):
+            model["probe_error"] = redact(model["probe_error"])
+    return summary
+
+
 # --------------------------------------------------------------------------- #
 # Schemas
 # --------------------------------------------------------------------------- #
