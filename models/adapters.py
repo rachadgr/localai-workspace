@@ -91,6 +91,174 @@ def _host_label(url: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Reasoning / thinking separation
+# --------------------------------------------------------------------------- #
+#: Field names a provider may use to *separate* the model's chain-of-thought from
+#: the answer. Ollama's OpenAI-compatible ``/v1`` surface streams it as
+#: ``delta.reasoning``; its native ``/api/chat`` uses ``message.thinking``.
+_REASONING_KEYS = ("reasoning", "reasoning_content", "thinking")
+
+#: Inline blocks some providers/templates embed inside ``content``. The Qwen3
+#: template opens the assistant turn with ``<think>`` and terminates it with the
+#: end-of-turn token; other providers close it explicitly with ``</think>``.
+#: Built via concatenation so the markers survive any markup-sensitive tooling.
+_THINK_OPEN = "<" + "think" + ">"
+_THINK_CLOSE = "<" + "/" + "think" + ">"
+_INLINE_REASONING_BLOCKS: tuple[tuple[str, str], ...] = (
+    (_THINK_OPEN, _THINK_CLOSE),
+    ("<reasoning>", "</reasoning>"),
+    ("<|begin_of_thought|>", "<|end_of_thought|>"),
+)
+
+
+def _split_reasoning_fields(payload: dict[str, Any]) -> tuple[str, str]:
+    """Split a message/delta dict into ``(answer_text, reasoning_text)``.
+
+    ``answer_text`` is ``content`` with any inline reasoning blocks removed;
+    ``reasoning_text`` is the concatenation of the explicit reasoning fields
+    (``reasoning`` / ``reasoning_content`` / ``thinking``) plus any inline block.
+    Never raises and never mutates the input.
+    """
+    content = payload.get("content")
+    content = "" if content is None else str(content)
+    reasoning_parts = []
+    for key in _REASONING_KEYS:
+        value = payload.get(key)
+        if value:
+            reasoning_parts.append(str(value))
+    if content:
+        content, inline = _strip_inline_reasoning(content)
+        if inline:
+            reasoning_parts.append(inline)
+    return content, "".join(reasoning_parts)
+
+
+def _strip_inline_reasoning(text: str) -> tuple[str, str]:
+    """Return ``(answer, reasoning)`` with inline reasoning blocks removed.
+
+    Operates on a complete string (non-streaming path). Streaming uses
+    :class:`ReasoningStreamSplitter`, which is boundary-aware.
+    """
+    splitter = ReasoningStreamSplitter()
+    answer = splitter.feed(text)
+    answer += splitter.flush()
+    return answer, splitter.reasoning
+
+
+class ReasoningStreamSplitter:
+    """Boundary-aware separator for streamed tokens.
+
+    Adapters feed raw ``content`` text; the splitter returns the *answer* text to
+    emit and accumulates the reasoning internally. Explicit reasoning fields are
+    fed straight to :meth:`add_reasoning`. Inline `` thinking…`` blocks (which may
+    be split across transport chunks) are buffered so a partial marker is never
+    emitted as an answer and reasoning never leaks into the visible stream.
+    """
+
+    def __init__(self, blocks: tuple[tuple[str, str], ...] = _INLINE_REASONING_BLOCKS) -> None:
+        self._blocks = blocks
+        self._openers = tuple(o for o, _ in blocks)
+        self._closer = ""  # first block's closing marker drives the "inside" state
+        self._in_reasoning = False
+        self._buffer = ""
+        self._reasoning: list[str] = []
+
+    def add_reasoning(self, text: str | None) -> None:
+        if text:
+            self._reasoning.append(str(text))
+
+    def feed(self, text: str | None) -> str:
+        """Consume raw ``content``; return the answer text to emit (may be ``""``)."""
+        if not text:
+            return ""
+        self._buffer += str(text)
+        out: list[str] = []
+        while self._buffer:
+            if not self._in_reasoning:
+                idx, opener = self._find_opener(self._buffer)
+                if idx == -1:
+                    keep = self._partial_suffix(self._buffer, self._openers)
+                    out.append(self._buffer[: len(self._buffer) - keep] if keep else self._buffer)
+                    self._buffer = self._buffer[len(self._buffer) - keep:] if keep else ""
+                    break
+                out.append(self._buffer[:idx])
+                self._buffer = self._buffer[idx + len(opener):]
+                self._closer = dict(self._blocks).get(opener, "")
+                self._in_reasoning = True
+            else:
+                idx = self._buffer.find(self._closer) if self._closer else -1
+                if idx == -1:
+                    keep = self._partial_suffix(self._buffer, (self._closer,)) if self._closer else 0
+                    if keep:
+                        self._reasoning.append(self._buffer[: len(self._buffer) - keep])
+                        self._buffer = self._buffer[len(self._buffer) - keep:]
+                    else:
+                        self._reasoning.append(self._buffer)
+                        self._buffer = ""
+                    break
+                self._reasoning.append(self._buffer[:idx])
+                self._buffer = self._buffer[idx + len(self._closer):]
+                self._in_reasoning = False
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Return any trailing answer text once the stream has ended."""
+        leftover = self._buffer
+        self._buffer = ""
+        if not leftover:
+            return ""
+        if self._in_reasoning:
+            self._reasoning.append(leftover)
+            return ""
+        return leftover
+
+    @property
+    def reasoning(self) -> str:
+        return "".join(self._reasoning)
+
+    def _find_opener(self, text: str) -> tuple[int, str]:
+        best_idx = -1
+        best_opener = ""
+        for opener in self._openers:
+            idx = text.find(opener)
+            if idx != -1 and (best_idx == -1 or idx < best_idx):
+                best_idx, best_opener = idx, opener
+        return best_idx, best_opener
+
+    @staticmethod
+    def _partial_suffix(text: str, markers: tuple[str, ...]) -> int:
+        """Longest ``k`` (``k < len(marker)``) where ``text`` ends with ``marker[:k]``."""
+        best = 0
+        for marker in markers:
+            if not marker:
+                continue
+            for k in range(min(len(marker) - 1, len(text)), 0, -1):
+                if text.endswith(marker[:k]):
+                    best = max(best, k)
+                    break
+        return best
+
+
+def _contains_control_message(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _CONTROL_MESSAGE_MARKERS)
+
+
+def _first_reasoning_field(payload: dict[str, Any]) -> str:
+    """Return the first non-empty separated reasoning value in ``payload``.
+
+    Streaming deltas carry reasoning in a single key at a time
+    (``reasoning`` / ``reasoning_content`` / ``thinking``); this returns whichever
+    is present so the caller can accumulate it internally.
+    """
+    for key in _REASONING_KEYS:
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+# --------------------------------------------------------------------------- #
 # OpenAI-compatible
 # --------------------------------------------------------------------------- #
 class OpenAICompatibleAdapter(ModelAdapter):
@@ -105,6 +273,9 @@ class OpenAICompatibleAdapter(ModelAdapter):
         self.api_key = api_key or ""
         self.provider = label
         self.is_local = is_local
+        #: Reasoning captured from the most recent ``complete``/``stream`` call
+        #: (when the provider separates it). Never emitted as answer text.
+        self.last_reasoning = ""
 
     # ------------------------------------------------------------- config
     def is_configured(self) -> bool:
@@ -196,7 +367,10 @@ class OpenAICompatibleAdapter(ModelAdapter):
         choice = data["choices"][0]
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
-        content = message.get("content") or ""
+        # Separate the answer (content) from any reasoning the provider exposes
+        # separately or inlines. Reasoning is captured, never returned as text.
+        content, reasoning = _split_reasoning_fields(message)
+        self.last_reasoning = reasoning
         _guard_control_message(content, self.provider)
         return Completion(
             text=content,
@@ -206,10 +380,14 @@ class OpenAICompatibleAdapter(ModelAdapter):
             tokens_out=int(usage.get("completion_tokens", 0) or 0),
             finish_reason=choice.get("finish_reason", "") or "",
             tool_calls=_parse_tool_calls(message.get("tool_calls")),
-            raw={"tool_calls": message.get("tool_calls"), "id": data.get("id")},
+            raw={"tool_calls": message.get("tool_calls"), "id": data.get("id"), "reasoning": reasoning},
+            reasoning=reasoning,
         )
 
     def stream(self, messages: list[ChatMessage], model: str, **opts: Any) -> Iterator[str]:
+        return self._stream_impl(messages, model, **opts)
+
+    def _stream_impl(self, messages: list[ChatMessage], model: str, **opts: Any) -> Iterator[str]:
         if not self.is_configured():
             raise ModelUnavailableError("Model provider not configured")
         payload = {
@@ -221,6 +399,10 @@ class OpenAICompatibleAdapter(ModelAdapter):
         for key in ("temperature", "top_p"):
             if opts.get(key) is not None:
                 payload[key] = opts[key]
+        if opts.get("think") is not None:
+            # Only forwarded when explicitly requested; providers that do not
+            # understand it simply ignore the extra field.
+            payload["think"] = opts["think"]
         try:
             resp = requests.post(
                 f"{self.base_url}/chat/completions",
@@ -233,6 +415,7 @@ class OpenAICompatibleAdapter(ModelAdapter):
             raise NetworkError("Streaming request failed", detail=str(exc)) from exc
         if resp.status_code >= 400:
             raise ModelUnavailableError("Streaming request rejected", detail=f"HTTP {resp.status_code}")
+        splitter = ReasoningStreamSplitter()
         for raw_line in resp.iter_lines(decode_unicode=True):
             if not raw_line or not raw_line.startswith("data:"):
                 continue
@@ -245,14 +428,29 @@ class OpenAICompatibleAdapter(ModelAdapter):
                 continue
             for choice in obj.get("choices", []):
                 delta = choice.get("delta") or {}
-                text = delta.get("content")
-                if text:
-                    if any(m.lower() in text.lower() for m in _CONTROL_MESSAGE_MARKERS):
-                        raise ModelUnavailableError(
-                            "Model provider refused the request (billing/quota notice)",
-                            detail=text[:300],
-                        )
-                    yield text
+                # Explicit reasoning fields → internal only (never emitted).
+                reasoning_field = _first_reasoning_field(delta)
+                if reasoning_field:
+                    splitter.add_reasoning(reasoning_field)
+                content = delta.get("content")
+                if content:
+                    for piece in (splitter.feed(content),):
+                        if piece:
+                            if _contains_control_message(piece):
+                                raise ModelUnavailableError(
+                                    "Model provider refused the request (billing/quota notice)",
+                                    detail=piece[:300],
+                                )
+                            yield piece
+        tail = splitter.flush()
+        if tail:
+            if _contains_control_message(tail):
+                raise ModelUnavailableError(
+                    "Model provider refused the request (billing/quota notice)",
+                    detail=tail[:300],
+                )
+            yield tail
+        self.last_reasoning = splitter.reasoning
 
     def embed(self, texts: list[str], model: str, **opts: Any) -> EmbeddingResult:
         if not self.is_configured():
@@ -471,6 +669,8 @@ class OllamaAdapter(ModelAdapter):
         self.api_key = api_key or ""
         self._openai_compatible = openai_compatible
         self._inner = OpenAICompatibleAdapter(self.base_url, self.api_key, label=self.provider, is_local=True)
+        #: Reasoning captured from the most recent call (native or /v1 path).
+        self.last_reasoning = ""
 
     def is_configured(self) -> bool:
         return bool(self.base_url)
@@ -556,20 +756,158 @@ class OllamaAdapter(ModelAdapter):
         self._inner = OpenAICompatibleAdapter(f"{self.base_url}/v1", self.api_key, label=self.provider, is_local=True)
         return self._inner
 
+    # ------------------------------------------------------------- thinking
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    def _resolve_think(self, opts: dict[str, Any]) -> bool | None:
+        """Resolve the requested thinking mode (and consume the ``think`` opt).
+
+        Priority: explicit per-call ``think`` opt → ``LAIW_OLLAMA_THINK`` setting.
+        ``None`` means "no preference" (keep the default OpenAI-compatible path).
+
+        Empirically, Ollama's OpenAI-compatible ``/v1`` surface *ignores* the
+        ``think`` field, while the native ``/api/chat`` honours it — so whenever a
+        preference is expressed we must use the native endpoint (no hack, no
+        hardcoded assumption).
+        """
+        if opts.get("think") is not None:
+            return self._coerce_bool(opts.pop("think"))
+        opts.pop("think", None)
+        configured = getattr(settings, "ollama_think", "") or ""
+        if str(configured).strip() != "":
+            return self._coerce_bool(configured)
+        return None
+
+    def _native_options(self, opts: dict[str, Any]) -> dict[str, Any]:
+        options: dict[str, Any] = {}
+        if opts.get("temperature") is not None:
+            options["temperature"] = opts["temperature"]
+        if opts.get("top_p") is not None:
+            options["top_p"] = opts["top_p"]
+        if opts.get("max_tokens") is not None:
+            options["num_predict"] = int(opts["max_tokens"])
+        return options
+
     def complete(self, messages: list[ChatMessage], model: str, **opts: Any) -> Completion:
         if not self.is_configured():
             raise ModelUnavailableError("Ollama provider not configured")
+        think = self._resolve_think(opts)
+        if think is not None:
+            return self._native_complete(messages, model, think=think, **opts)
         return self._v1().complete(messages, model, **opts)
 
     def stream(self, messages: list[ChatMessage], model: str, **opts: Any) -> Iterator[str]:
         if not self.is_configured():
             raise ModelUnavailableError("Ollama provider not configured")
+        think = self._resolve_think(opts)
+        if think is not None:
+            return self._native_stream(messages, model, think=think, **opts)
         return self._v1().stream(messages, model, **opts)
 
     def embed(self, texts: list[str], model: str, **opts: Any) -> EmbeddingResult:
         if not self.is_configured():
             raise ModelUnavailableError("Ollama provider not configured")
         return self._v1().embed(texts, model, **opts)
+
+    # ------------------------------------------------------ native /api/chat
+    def _native_payload(self, messages: list[ChatMessage], model: str, think: bool, opts: dict[str, Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [m.to_dict() for m in messages],
+            "think": think,
+        }
+        options = self._native_options(opts)
+        if options:
+            payload["options"] = options
+        return payload
+
+    def _native_complete(self, messages: list[ChatMessage], model: str, *, think: bool, **opts: Any) -> Completion:
+        payload = {**self._native_payload(messages, model, think, opts), "stream": False}
+        try:
+            resp = requests.post(
+                f"{self._native_base()}/api/chat",
+                headers={"Content-Type": "application/json"},
+                data=json.dumps(payload),
+                timeout=settings.llm_timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise NetworkError("Ollama request failed", detail=str(exc)) from exc
+        if resp.status_code in (401, 403):
+            raise ModelUnavailableError("Ollama rejected credentials", detail=f"HTTP {resp.status_code}")
+        if resp.status_code >= 400:
+            raise ModelUnavailableError("Ollama rejected the request", detail=f"HTTP {resp.status_code}")
+        data = resp.json()
+        message = data.get("message") or {}
+        content, reasoning = _split_reasoning_fields(message)
+        self.last_reasoning = reasoning
+        _guard_control_message(content, self.provider)
+        return Completion(
+            text=content,
+            model=data.get("model", model),
+            provider=self.provider,
+            tokens_in=int(data.get("prompt_eval_count", 0) or 0),
+            tokens_out=int(data.get("eval_count", 0) or 0),
+            finish_reason=data.get("done_reason", "") or "",
+            raw={"reasoning": reasoning, "thinking": message.get("thinking")},
+            reasoning=reasoning,
+        )
+
+    def _native_stream(self, messages: list[ChatMessage], model: str, *, think: bool, **opts: Any) -> Iterator[str]:
+        payload = {**self._native_payload(messages, model, think, opts), "stream": True}
+        try:
+            resp = requests.post(
+                f"{self._native_base()}/api/chat",
+                headers={"Content-Type": "application/json"},
+                data=json.dumps(payload),
+                timeout=settings.llm_timeout_seconds,
+                stream=True,
+            )
+        except requests.RequestException as exc:
+            raise NetworkError("Ollama streaming request failed", detail=str(exc)) from exc
+        if resp.status_code >= 400:
+            raise ModelUnavailableError("Ollama streaming request rejected", detail=f"HTTP {resp.status_code}")
+        splitter = ReasoningStreamSplitter()
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if not raw_line:
+                continue
+            line = raw_line[5:].strip() if raw_line.startswith("data:") else raw_line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and obj.get("error"):
+                raise ModelUnavailableError("Ollama returned an error", detail=str(obj.get("error"))[:300])
+            message = obj.get("message") or {}
+            reasoning_field = _first_reasoning_field(message)
+            if reasoning_field:
+                splitter.add_reasoning(reasoning_field)
+            content = message.get("content")
+            if content:
+                piece = splitter.feed(content)
+                if piece:
+                    if _contains_control_message(piece):
+                        raise ModelUnavailableError(
+                            "Model provider refused the request (billing/quota notice)",
+                            detail=piece[:300],
+                        )
+                    yield piece
+            if obj.get("done"):
+                break
+        tail = splitter.flush()
+        if tail:
+            if _contains_control_message(tail):
+                raise ModelUnavailableError(
+                    "Model provider refused the request (billing/quota notice)",
+                    detail=tail[:300],
+                )
+            yield tail
+        self.last_reasoning = splitter.reasoning
 
 
 def _ollama_context(entry: dict[str, Any], model_id: str) -> int:

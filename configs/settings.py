@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # OpenAI-compatible surface; Ollama also exposes a native /api/tags list).
     ollama_base_url: str = Field(default_factory=lambda: os.environ.get("OLLAMA_BASE_URL", ""))
     ollama_api_key: str = Field(default_factory=lambda: os.environ.get("OLLAMA_API_KEY", ""))
+    # Optional thinking control for Ollama. Unset ("") keeps the default
+    # OpenAI-compatible path. "true"/"false" routes Ollama chat/stream through the
+    # native /api/chat endpoint, which is the one that genuinely honours `think`
+    # (the /v1 OpenAI-compatible surface ignores it).
+    ollama_think: str = Field(default_factory=lambda: os.environ.get("LAIW_OLLAMA_THINK", ""))
     # Optional named OpenAI-compatible providers: LAIW_PROVIDER_<NAME>_URL / _KEY
     # e.g. LAIW_PROVIDER_GROQ_URL + LAIW_PROVIDER_GROQ_KEY
     # (parsed lazily by models.registry; never persisted or returned to clients)

@@ -171,6 +171,10 @@ class Completion:
     finish_reason: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+    #: Private chain-of-thought / reasoning captured from the provider, when the
+    #: provider separates it (``reasoning`` / ``thinking`` fields or inline
+    #: markers). ``text`` always holds the *answer* only — never raw reasoning.
+    reasoning: str = ""
 
     @property
     def cost_usd(self) -> float:
