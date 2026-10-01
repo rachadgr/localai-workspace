@@ -5,7 +5,8 @@ Public surface:
 * :class:`models.base.ModelAdapter` — the unified provider interface.
 * :mod:`models.adapters` — OpenAI-compatible / Anthropic / Ollama / echo adapters.
 * :class:`models.registry.ModelRegistry` — discovery + honest probing + caching.
-* :class:`models.router.ModelRouter` — task-based model selection.
+* :class:`models.router.ModelRouter` — task-based model selection under hard
+  capability/modality constraints, with an explicit ``NO_CAPABLE_MODEL`` verdict.
 """
 
 from models.base import (  # noqa: F401
@@ -45,7 +46,17 @@ from models.base import (  # noqa: F401
 )
 from models.catalog import ModelCatalogEntry, catalog_entries, get_catalog_entry  # noqa: F401
 from models.registry import ModelInfo, ModelRegistry, registry  # noqa: F401
-from models.router import ModelRouter, RoutingDecision  # noqa: F401
+from models.router import (  # noqa: F401
+    OUTCOME_NO_CAPABLE_MODEL,
+    OUTCOME_REGISTRY_UNAVAILABLE,
+    OUTCOME_SELECTED,
+    TASK_REQUIREMENTS,
+    ModelRouter,
+    RoutingDecision,
+    TaskRequirement,
+    requirement_for,
+    satisfies_requirements,
+)
 
 __all__ = [
     "ModelAdapter",
@@ -56,6 +67,13 @@ __all__ = [
     "ModelRegistry",
     "ModelRouter",
     "RoutingDecision",
+    "TaskRequirement",
+    "TASK_REQUIREMENTS",
+    "requirement_for",
+    "satisfies_requirements",
+    "OUTCOME_SELECTED",
+    "OUTCOME_NO_CAPABLE_MODEL",
+    "OUTCOME_REGISTRY_UNAVAILABLE",
     "ChatMessage",
     "Completion",
     "EmbeddingResult",

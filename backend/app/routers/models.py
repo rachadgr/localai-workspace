@@ -218,12 +218,18 @@ def list_providers(_: User = Depends(get_current_user)) -> dict[str, Any]:
 
 @router.get("/models/router", tags=["models"])
 def router_preview(_: User = Depends(get_current_user)) -> dict[str, Any]:
-    """Deterministic routing decision for each task class (no execution)."""
+    """Deterministic routing decision for each task class (no execution).
+
+    Each entry now carries an explicit ``outcome``
+    (``SELECTED`` / ``NO_CAPABLE_MODEL`` / ``REGISTRY_UNAVAILABLE``) plus the hard
+    ``required`` capabilities and ``modalities`` the router enforced, so a client
+    can tell a real pick apart from an honest "no capable model" verdict.
+    """
     router_obj = ModelRouter(model_registry)
     out: dict[str, Any] = {}
     for task in TASK_REQUIREMENTS:
         out[task] = router_obj.select(task).to_dict()
-    return {"tasks": out, "prefer_local": False}
+    return {"tasks": out, "prefer_local": False, "capability_gated": True}
 
 
 @router.get("/models/{model_id:path}/health", tags=["models"])
