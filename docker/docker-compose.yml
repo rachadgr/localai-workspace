@@ -1,0 +1,44 @@
+services:
+  api:
+    build: .
+    ports:
+      - "5060:5060"
+    environment:
+      DATABASE_URL: postgresql+psycopg://localai:localai@db:5432/localai
+      REDIS_URL: redis://redis:6379/0
+      LAIW_WORKER_MODE: inline
+      LAIW_ENV: production
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: localai
+      POSTGRES_PASSWORD: localai
+      POSTGRES_DB: localai
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U localai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
+volumes:
+  pgdata:
+  redisdata:

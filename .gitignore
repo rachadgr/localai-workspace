@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+firebase-admin-sdk.json
+google-services.json
+
+# Data & storage (runtime)
+data/
+storage/
+*.db
+*.sqlite3
+
+# Frontend build artefacts
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+web-dist/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.log

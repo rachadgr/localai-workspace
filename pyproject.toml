@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localai-workspace"
+version = "1.0.0"
+description = "LocalAI Workspace — an independent, local AI workspace with a Super Agent orchestrator."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "pydantic==2.13.4",
+  "pydantic-settings==2.7.1",
+  "SQLAlchemy==2.0.36",
+  "psycopg[binary]==3.2.3",
+  "python-multipart==0.0.20",
+  "PyJWT==2.10.1",
+  "bcrypt==4.2.1",
+  "requests==2.33.0",
+  "httpx==0.28.1",
+  "python-docx==1.1.2",
+  "openpyxl==3.1.5",
+  "reportlab==5.0.1",
+  "python-pptx==1.0.2",
+  "pandas==2.2.3",
+  "trafilatura==2.0.0",
+  "markdown==3.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.0.3", "pytest-asyncio==0.25.2"]
+
+[tool.setuptools]
+packages = ["backend", "agents", "tools", "models", "workers", "database", "configs", "scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+  "integration: tests requiring a live model provider or network",
+  "security: security-focused tests",
+  "e2e: end-to-end smoke tests",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
