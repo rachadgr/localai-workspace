@@ -31,8 +31,18 @@ Base path: `/api`. Auth: `Authorization: Bearer <jwt>` (except health/version an
     video, embedding`) derived from declared metadata — it never implies usability.
   - No new network I/O, no weight download, no secrets.
 - `GET /api/models/providers` — per-provider `{status, configured, local, endpoint, error}`
+- `GET /api/models/runtimes` — **Runtime matrix**: per runtime `{id, label, local,
+  adapter, supported, surfaces, modalities, reason}`. A runtime with `supported:false`
+  reports a clear `reason` (no fake adapter). Additive, no secrets, no network I/O.
+- `GET /api/models/generation` — **Generation registrations** (image / video / i2v):
+  each row carries `state` (`AVAILABLE | INSTALLED | NOT_INSTALLED | NOT_CONFIGURED`),
+  `runtime`, `runtime_supported`, `reason`, `capability`, `modality`, `official_ref`.
+  `automatic_download: false` — nothing is ever downloaded.
+- `GET /api/models/provisioning` — **CATALOG → INSTALLED → AVAILABLE** view of every
+  catalog model: `state`, `runtime`, `runtime_supported`, `installed`, `available`,
+  `reason`. `available` is only true after a real probe/sink.
 - `GET /api/models/router` — deterministic routing decision for each task class
-  (`chat, code, document, vision, tools, reasoning, image, embedding, video`)
+  (`chat, code, document, vision, tools, reasoning, image, embedding, video, i2v`)
 - `GET /api/models/{id}` — single model metadata
 - `GET /api/models/{id}/health?force=` — real health probe for one model (cached)
 - `POST /api/models/test-connection` `{provider?, model?}` — safe connection test.

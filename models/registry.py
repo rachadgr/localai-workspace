@@ -60,7 +60,7 @@ from models.adapters import (
     OllamaAdapter,
     OpenAICompatibleAdapter,
 )
-from models.catalog import ModelCatalogEntry, catalog_entries, get_catalog_entry
+from models.catalog import ModelCatalogEntry, catalog_entries, entry_runtime, entry_runtime_supported, get_catalog_entry
 
 logger = get_logger("model_registry")
 
@@ -122,6 +122,11 @@ class ModelInfo:
     reasoning: bool = False
     cost_tier: str = COST_TIER_UNKNOWN
     catalog: bool = False
+    #: Serving runtime id (see :mod:`models.runtimes`); ``runtime_supported`` is
+    #: ``False`` when this build wires no adapter for that runtime, so the model is
+    #: reported ``NOT_CONFIGURED`` downstream (clear reason, never a fake adapter).
+    runtime: str = ""
+    runtime_supported: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -289,10 +294,15 @@ class ModelRegistry:
             error=health.get("error", ""),
             config_source="environment",
             modality=list(infer_modality(desc.kind, vision=caps.vision)),
+            runtime=desc.provider,
         )
         entry = get_catalog_entry(desc.id)
         if entry is not None:
             self._apply_catalog_metadata(info, entry)
+        else:
+            # A discovered model unknown to the catalog: it was literally discovered
+            # by a working adapter, so its runtime is supported by definition.
+            info.runtime_supported = True
         return info
 
     @staticmethod
@@ -320,6 +330,8 @@ class ModelRegistry:
         # Catalog capabilities replace the id-heuristic ones for a known model.
         info.capabilities = list(entry.capabilities)
         info.modality = list(entry.modality)
+        info.runtime = entry_runtime(entry)
+        info.runtime_supported = entry_runtime_supported(entry)
         if not info.notes:
             info.notes = entry.notes
 
@@ -351,6 +363,8 @@ class ModelRegistry:
             reasoning=entry.reasoning,
             cost_tier=entry.cost_tier,
             catalog=True,
+            runtime=entry_runtime(entry),
+            runtime_supported=entry_runtime_supported(entry),
         )
 
     def _discover_provider(self, name: str, adapter: ModelAdapter) -> tuple[str, list[ModelDescriptor], str]:
@@ -523,6 +537,72 @@ class ModelRegistry:
     def local_activation_summary(self, *, force: bool = False) -> dict[str, Any]:
         """Compact local-activation report (installed / active / available ids)."""
         return self.local_activation().summary(force=force)
+
+    # ---------------------------------------------------- generation / runtimes
+    def generation_registrations(self) -> tuple[Any, ...]:
+        """Declarative image/video/i2v registrations (no runtime claim, no download).
+
+        Additive, offline: it returns the declarative registrations from
+        :mod:`models.generation`. Availability is *not* asserted here — call
+        :meth:`generation_summary` for the reconciled, honest state.
+        """
+        from models.generation import generation_registrations
+
+        return generation_registrations()
+
+    def generation_summary(
+        self,
+        *,
+        runtime_models: dict[str, Any] | None = None,
+        endpoint_models: dict[str, tuple[str, ...]] | None = None,
+    ) -> dict[str, Any]:
+        """Honest image/video/i2v state (supported runtime + a real sink ⇒ AVAILABLE).
+
+        Additive and read-only: this build wires **no** diffusers adapter, so every
+        registered generation model is reported ``NOT_CONFIGURED`` with a clear
+        reason unless an operator has genuinely wired a runtime/endpoint. No weights
+        are downloaded and no fake adapter is used.
+        """
+        from models.generation import generation_summary
+
+        return generation_summary(runtime_models=runtime_models, endpoint_models=endpoint_models)
+
+    def runtimes(self) -> dict[str, Any]:
+        """The runtime matrix (which runtimes this build can actually serve)."""
+        from models.runtimes import runtime_view
+
+        return runtime_view()
+
+    # --------------------------------------------------------- provisioning
+    def provisioning_summary(
+        self,
+        *,
+        runtime_models: dict[str, Any] | None = None,
+        generation_runtime_models: dict[str, Any] | None = None,
+        endpoint_models: dict[str, tuple[str, ...]] | None = None,
+    ) -> dict[str, Any]:
+        """Explicit **CATALOG → INSTALLED → AVAILABLE** view of every catalog model.
+
+        Composes the static catalog, the local install view and the probed status
+        into one honest per-model row (see :mod:`models.provisioning`). ``AVAILABLE``
+        is only ever reported when the registry probed the model itself; a model
+        whose runtime is unsupported here is ``NOT_CONFIGURED`` with a clear reason.
+        Performs **no** new network I/O and never downloads weights.
+        """
+        from models.provisioning import provisioning_summary
+
+        return provisioning_summary(
+            self,
+            runtime_models=runtime_models,
+            generation_runtime_models=generation_runtime_models,
+            endpoint_models=endpoint_models,
+            enabled=bool(getattr(settings, "local_activation_enabled", True)),
+        )
+
+    def provisioned_model(self, model_id: str) -> dict[str, Any] | None:
+        """Provisioning row for a single model id (``None`` when unknown)."""
+        views = self.provisioning_summary()["models"]
+        return next((m for m in views if m["id"] == model_id), None)
 
     # ------------------------------------------------------------- health
     def chat_available(self, force: bool = False) -> bool:

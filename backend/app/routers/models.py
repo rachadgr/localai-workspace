@@ -124,6 +124,9 @@ def _catalog_entry_view(info: Any) -> dict[str, Any]:
         "streaming": bool(getattr(info, "streaming", False)),
         "local": bool(getattr(info, "local", False)),
         "cost_tier": getattr(info, "cost_tier", "") or "unknown",
+        # serving runtime (which runtime actually serves the model)
+        "serving_runtime": getattr(info, "runtime", "") or info.provider,
+        "runtime_supported": bool(getattr(info, "runtime_supported", True)),
         # runtime status — NEVER replaced by catalog metadata
         "status": info.status,
         "available": info.status == STATUS_AVAILABLE,
@@ -213,6 +216,45 @@ def local_model_activation(force: bool = False, _: User = Depends(get_current_us
         if model.get("probe_error"):
             model["probe_error"] = redact(model["probe_error"])
     return summary
+
+
+@router.get("/models/runtimes", tags=["models"])
+def list_model_runtimes(_: User = Depends(get_current_user)) -> dict[str, Any]:
+    """**Runtime matrix** — which runtimes this build can actually serve models with.
+
+    Additive, read-only: for each runtime it reports its label, whether it is local,
+    the adapter wired here (``""`` when none exists yet), the capability surfaces it
+    can serve, and — when unsupported — a **clear reason**. No credentials, no
+    network I/O, no weight download.
+    """
+    return model_registry.runtimes()
+
+
+@router.get("/models/generation", tags=["models"])
+def list_generation_models(_: User = Depends(get_current_user)) -> dict[str, Any]:
+    """**Generation registrations** — image / video / image-to-video, honestly stated.
+
+    Additive, read-only. Each registered open-weight generation model is reported as
+    ``AVAILABLE`` / ``INSTALLED`` / ``NOT_INSTALLED`` / ``NOT_CONFIGURED``. This build
+    wires **no** generation adapter, so entries are ``NOT_CONFIGURED`` with a clear
+    reason — there is no fake adapter and ``automatic_download`` is ``false``. The
+    official reference (Hugging Face repo id) is documentation only and is never
+    fetched.
+    """
+    return model_registry.generation_summary()
+
+
+@router.get("/models/provisioning", tags=["models"])
+def list_provisioned_models(_: User = Depends(get_current_user)) -> dict[str, Any]:
+    """**CATALOG → INSTALLED → AVAILABLE** view of every declared model.
+
+    Additive, read-only. For each catalog model it reports which layer it has
+    reached (``CATALOG`` / ``INSTALLED`` / ``AVAILABLE`` / ``NOT_CONFIGURED``), the
+    serving runtime and whether this build supports it, plus a clear ``reason`` when
+    it does not. ``AVAILABLE`` is only ever reported when the runtime confirmed the
+    model with a real probe/sink; nothing is downloaded and no secrets are returned.
+    """
+    return model_registry.provisioning_summary()
 
 
 # --------------------------------------------------------------------------- #

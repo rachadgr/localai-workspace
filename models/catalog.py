@@ -46,15 +46,36 @@ from models.base import (
     KIND_EMBEDDING,
     KIND_IMAGE,
     KIND_VIDEO,
+    MODALITY_IMAGE,
+    MODALITY_TEXT,
+    MODALITY_VIDEO,
     STATUS_NOT_CONFIGURED,
     infer_modality,
 )
+from models.runtimes import RUNTIME_DIFFUSERS
 
 # --------------------------------------------------------------------------- #
 # Provider classification (labels only — never credentials)
 # --------------------------------------------------------------------------- #
 #: Providers whose models run locally (no external egress required).
 LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama"})
+
+
+def entry_runtime(entry: "ModelCatalogEntry") -> str:
+    """Resolve the serving runtime id recorded for ``entry``.
+
+    Falls back to ``provider`` for entries created before the field existed, so the
+    helper is safe to call on any catalog entry.
+    """
+    runtime = getattr(entry, "runtime", "") or ""
+    if runtime:
+        return runtime
+    return entry.provider
+
+
+def entry_runtime_supported(entry: "ModelCatalogEntry") -> bool:
+    """Whether this build can actually serve ``entry`` through its runtime."""
+    return bool(getattr(entry, "runtime_supported", True))
 
 
 def is_local_provider(provider: str) -> bool:
@@ -85,6 +106,11 @@ class ModelCatalogEntry:
     cost_tier: str = COST_TIER_UNKNOWN
     status: str = STATUS_NOT_CONFIGURED
     notes: str = ""
+    #: Serving runtime id (see :mod:`models.runtimes`). Empty = derive from provider.
+    runtime: str = ""
+    #: Whether this build wires an adapter for ``runtime``. ``False`` ⇒ the model is
+    #: reported ``NOT_CONFIGURED`` downstream with a clear reason (never faked).
+    runtime_supported: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -151,22 +177,27 @@ def _entry(
     status: str = STATUS_NOT_CONFIGURED,
     local: bool | None = None,
     notes: str = "",
+    runtime: str = "",
+    runtime_supported: bool = True,
+    modality: tuple[str, ...] | None = None,
 ) -> ModelCatalogEntry:
     """Build a consistent :class:`ModelCatalogEntry`.
 
     ``local`` and ``streaming`` are derived from ``provider``/``kind`` unless
     explicitly overridden. ``status`` defaults to ``NOT_CONFIGURED`` — never
-    ``AVAILABLE``.
+    ``AVAILABLE``. ``modality`` may be overridden for models whose inputs differ
+    from the default kind mapping (e.g. an image-to-video model consumes an image).
     """
     resolved_local = is_local_provider(provider) if local is None else local
     streaming = kind == KIND_CHAT
+    resolved_runtime = runtime or provider
     return ModelCatalogEntry(
         id=id,
         name=name,
         family=family,
         provider=provider,
         kind=kind,
-        modality=tuple(infer_modality(kind, vision=vision)),
+        modality=tuple(modality) if modality is not None else tuple(infer_modality(kind, vision=vision)),
         capabilities=_compose_capabilities(
             kind,
             tools=tools,
@@ -185,6 +216,8 @@ def _entry(
         cost_tier=cost_tier,
         status=status,
         notes=notes,
+        runtime=resolved_runtime,
+        runtime_supported=runtime_supported,
     )
 
 
@@ -837,7 +870,10 @@ _ENTRIES: list[ModelCatalogEntry] = [
         long_context=True,
         cost_tier="low",
     ),
-    # ------------------------------------------------------- image generation (cloud)
+    # ------------------------------------------ image generation (open-weight)
+    # Served by the local ``diffusers`` runtime, for which this build wires no
+    # adapter yet → each entry carries ``runtime_supported=False`` and is reported
+    # NOT_CONFIGURED downstream (clear reason, no fake adapter, no download).
     _entry(
         "flux.1-dev",
         "FLUX.1 Dev",
@@ -845,6 +881,9 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "bfl",
         kind=KIND_IMAGE,
         cost_tier="medium",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        notes="Open-weight image model; no diffusers adapter wired in this build.",
     ),
     _entry(
         "flux.1-schnell",
@@ -853,7 +892,9 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "bfl",
         kind=KIND_IMAGE,
         cost_tier="low",
-        notes="Distilled, few-step variant.",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        notes="Distilled, few-step open-weight variant; no diffusers adapter wired in this build.",
     ),
     _entry(
         "flux.1-pro",
@@ -862,6 +903,9 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "bfl",
         kind=KIND_IMAGE,
         cost_tier="high",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        notes="Hosted FLUX.1 Pro (closed weights).",
     ),
     _entry(
         "qwen-image",
@@ -870,6 +914,9 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "qwen",
         kind=KIND_IMAGE,
         cost_tier="medium",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        notes="Open-weight text-to-image foundation model; no diffusers adapter wired in this build.",
     ),
     _entry(
         "qwen-image-edit",
@@ -878,7 +925,9 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "qwen",
         kind=KIND_IMAGE,
         cost_tier="medium",
-        notes="Instruction-based image editing.",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        notes="Instruction-based image editing; no diffusers adapter wired in this build.",
     ),
     _entry(
         "stable-diffusion-3.5-large",
@@ -887,8 +936,10 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "stability",
         kind=KIND_IMAGE,
         cost_tier="medium",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
     ),
-    # ------------------------------------------------------- video generation (cloud)
+    # ------------------------------------------ video generation (open-weight)
     _entry(
         "wan2.2-t2v",
         "Wan 2.2 T2V",
@@ -896,7 +947,9 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "alibaba",
         kind=KIND_VIDEO,
         cost_tier="medium",
-        notes="Text-to-video.",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        notes="Text-to-video; no diffusers adapter wired in this build.",
     ),
     _entry(
         "wan2.2-i2v",
@@ -905,7 +958,10 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "alibaba",
         kind=KIND_VIDEO,
         cost_tier="medium",
-        notes="Image-to-video.",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        modality=(MODALITY_TEXT, MODALITY_IMAGE, MODALITY_VIDEO),
+        notes="Image-to-video: consumes an image + prompt, produces video.",
     ),
     _entry(
         "hunyuanvideo",
@@ -914,7 +970,9 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "tencent",
         kind=KIND_VIDEO,
         cost_tier="medium",
-        notes="Text-to-video.",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        notes="Text-to-video; no diffusers adapter wired in this build.",
     ),
     _entry(
         "hunyuanvideo-i2v",
@@ -923,7 +981,10 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "tencent",
         kind=KIND_VIDEO,
         cost_tier="medium",
-        notes="Image-to-video.",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        modality=(MODALITY_TEXT, MODALITY_IMAGE, MODALITY_VIDEO),
+        notes="Image-to-video: consumes an image + prompt, produces video.",
     ),
     _entry(
         "cogvideox-5b",
@@ -932,6 +993,9 @@ _ENTRIES: list[ModelCatalogEntry] = [
         "zhipu",
         kind=KIND_VIDEO,
         cost_tier="low",
+        runtime=RUNTIME_DIFFUSERS,
+        runtime_supported=False,
+        notes="Text-to-video (5B); no diffusers adapter wired in this build.",
     ),
 ]
 
@@ -976,6 +1040,8 @@ __all__ = [
     "CATALOG",
     "LOCAL_PROVIDERS",
     "is_local_provider",
+    "entry_runtime",
+    "entry_runtime_supported",
     "catalog_entries",
     "catalog_ids",
     "get_catalog_entry",
