@@ -4,11 +4,87 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.core.errors import ModelUnavailableError, ToolError
+from backend.app.core.errors import ModelUnavailableError
 from models.adapters import ChatMessage
 from models.registry import STATUS_AVAILABLE
 from tools.base import BaseTool, Permission, ToolContext, ToolResult, ValidationReport
 from tools.registry import register
+
+#: Default system instruction (unchanged behaviour).
+_DEFAULT_SYSTEM = (
+    "You are LocalAI Workspace, a precise, honest assistant. If you are unsure or lack data, "
+    "say so explicitly instead of inventing facts."
+)
+
+#: Header for the live runtime-context system message. It states explicitly that the
+#: values are read from the registry and are authoritative runtime facts that must
+#: not be contradicted or replaced by general knowledge.
+_RUNTIME_CONTEXT_INTRO = (
+    "Runtime facts about the model currently handling this conversation. "
+    "These values are read live from the model registry and are authoritative: "
+    "do not contradict, replace, or guess them from general knowledge. "
+    "When the user asks about the model's status, provider, endpoint, capabilities, "
+    "or whether it runs locally, rely on these runtime facts rather than general assumptions."
+)
+
+
+def _runtime_model_facts(model_id: str, registry: Any) -> dict[str, Any] | None:
+    """Read the chosen model's registry metadata as plain runtime facts.
+
+    Returns ``None`` when the registry exposes no ``ModelInfo`` for ``model_id``
+    (or the lookup fails for any reason). It never raises, so a missing lookup
+    degrades to the current behaviour instead of breaking the chat. No provider,
+    model name, or endpoint is hardcoded: every value is taken from the registry.
+    """
+    try:
+        getter = getattr(registry, "get", None)
+        if not callable(getter):
+            return None
+        info = getter(model_id)
+    except Exception:  # noqa: BLE001 - metadata is best-effort, never fatal
+        return None
+    if info is None:
+        return None
+
+    def _get(name: str, default: Any = None) -> Any:
+        try:
+            return getattr(info, name, default)
+        except Exception:  # noqa: BLE001
+            return default
+
+    context_window = _get("context_window", 0) or _get("context_length", 0) or 0
+    return {
+        "id": _get("id", model_id) or model_id,
+        "name": _get("name", "") or model_id,
+        "provider": _get("provider", ""),
+        "status": _get("status", ""),
+        "local": bool(_get("local", False)),
+        "endpoint": _get("endpoint", "") or "",
+        "vision": bool(_get("vision", False)),
+        "tools": bool(_get("tools", False)),
+        "streaming": bool(_get("streaming", False)),
+        "context_window": context_window,
+    }
+
+
+def _render_runtime_context(facts: dict[str, Any]) -> str:
+    """Render runtime facts as an authoritative system message (no hardcoding)."""
+    lines = [
+        _RUNTIME_CONTEXT_INTRO,
+        "",
+        "Current runtime facts:",
+        f"- model_id: {facts['id']}",
+        f"- model_name: {facts['name']}",
+        f"- provider: {facts['provider']}",
+        f"- status: {facts['status']}",
+        f"- local: {'true' if facts['local'] else 'false'}",
+        f"- endpoint: {facts['endpoint'] or '(not disclosed)'}",
+        f"- vision: {'true' if facts['vision'] else 'false'}",
+        f"- tools: {'true' if facts['tools'] else 'false'}",
+        f"- streaming: {'true' if facts['streaming'] else 'false'}",
+        f"- context_window: {facts['context_window']}",
+    ]
+    return "\n".join(lines)
 
 
 @register
@@ -64,9 +140,13 @@ class ChatTool(BaseTool):
             registry = global_registry
 
         model = payload.get("model") or registry.default_chat_model()
-        system = payload.get("system") or "You are LocalAI Workspace, a precise, honest assistant. If you are unsure or lack data, say so explicitly instead of inventing facts."
+        system = payload.get("system") or _DEFAULT_SYSTEM
 
         messages: list[ChatMessage] = [ChatMessage("system", system)]
+        # Inject live runtime facts about the selected model (best-effort; never fatal).
+        runtime_facts = _runtime_model_facts(model, registry)
+        if runtime_facts is not None:
+            messages.append(ChatMessage("system", _render_runtime_context(runtime_facts)))
         if payload.get("context"):
             messages.append(ChatMessage("system", f"Project context:\n{payload['context']}"))
         for item in payload.get("history") or []:
