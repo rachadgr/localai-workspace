@@ -22,6 +22,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Map<String, dynamic>? _settings;
   String? _error;
   bool _busy = false;
+  bool _testing = false;
+  bool? _reachable;
 
   @override
   void initState() {
@@ -39,7 +41,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _test() async {
+    if (!AppConfig.isValid(_url.text)) {
+      setState(() => _error = 'Enter a valid server URL (e.g. https://your-tunnel.trycloudflare.com).');
+      return;
+    }
+    setState(() {
+      _testing = true;
+      _reachable = null;
+      _error = null;
+    });
+    try {
+      await AppConfig.setBaseUrl(_url.text);
+      if (!mounted) return;
+      setState(() => _url.text = AppConfig.baseUrl);
+      final ok = await context.read<AsafApi>().ping();
+      setState(() => _reachable = ok);
+      if (!ok) setState(() => _error = 'No response from ${AppConfig.baseUrl}/api/health.');
+    } finally {
+      if (mounted) setState(() => _testing = false);
+    }
+  }
+
   Future<void> _save() async {
+    if (!AppConfig.isValid(_url.text)) {
+      setState(() => _error = 'Enter a valid server URL (e.g. https://your-tunnel.trycloudflare.com).');
+      return;
+    }
     setState(() => _busy = true);
     await AppConfig.setBaseUrl(_url.text);
     if (!mounted) return;
@@ -47,7 +75,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _url.text = AppConfig.baseUrl;
       _busy = false;
     });
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Server URL saved. Pull to refresh the studio.')));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Server URL saved. Reconnecting…')));
     await context.read<StudioStore>().refreshAll();
   }
 
@@ -70,8 +98,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 controller: _url,
                 decoration: const InputDecoration(
                   labelText: 'ASAF AI server URL',
-                  hintText: 'http://10.0.2.2:5060',
-                  helperText: 'Use 10.0.2.2 for the host from the Android emulator, or your LAN IP.',
+                  hintText: 'https://your-tunnel.trycloudflare.com',
+                  helperText: 'The public HTTPS tunnel URL of your backend, or your LAN IP '
+                      'on the same Wi-Fi. Never a hardcoded emulator address.',
                   helperStyle: AsafText.small,
                 ),
                 keyboardType: TextInputType.url,
@@ -86,6 +115,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(width: 10),
                   OutlinedButton.icon(
+                    onPressed: (_busy || _testing) ? null : _test,
+                    icon: _testing
+                        ? const SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : Icon(
+                            _reachable == true ? Icons.cloud_done : Icons.cloud_queue,
+                            size: 18,
+                            color: _reachable == true ? AsafColors.statusAvailable : null,
+                          ),
+                    label: const Text('Test'),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
                     onPressed: () async {
                       await AppConfig.resetBaseUrl();
                       if (!mounted) return;
@@ -96,6 +137,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ],
               ),
+              if (_reachable != null) ...[
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Text('Health check:', style: AsafText.small),
+                    const SizedBox(width: 8),
+                    StatusBadge(_reachable! ? 'AVAILABLE' : 'UNAVAILABLE', dense: true),
+                  ],
+                ),
+              ],
             ],
           ),
         ),

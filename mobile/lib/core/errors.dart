@@ -21,6 +21,8 @@ enum ApiErrorCode {
   runtimeError,
   network,
   timeout,
+  unreachable,
+  cors,
   server,
   unknown,
 }
@@ -51,6 +53,30 @@ ApiErrorCode _codeFromStatus(int status, String detail) {
 /// Human-readable, secret-free error returned by [AsafApi].
 class ApiException implements Exception {
   ApiException(this.code, this.message, {this.statusCode, this.detail});
+
+  /// Friendly, actionable message for a transport-level failure reaching the
+  /// backend (DNS, refused connection, TLS, timeout). The [url] is the exact
+  /// server address the client tried, so the user can correct it.
+  factory ApiException.unreachable(String url, {String? reason}) {
+    final hint = reason == null || reason.isEmpty ? '' : ' ($reason)';
+    return ApiException(
+      ApiErrorCode.unreachable,
+      'Cannot reach the ASAF AI backend at $url.\n'
+          'Check that the server is running, that the URL is correct, and that '
+          'the phone has a network route to it (use the public HTTPS tunnel URL '
+          'for a hosted backend, or your LAN IP on the same Wi-Fi).$hint',
+      detail: url,
+    );
+  }
+
+  /// Raised when a browser (web client) blocks the response for CORS reasons.
+  factory ApiException.cors(String url) => ApiException(
+        ApiErrorCode.cors,
+        'The server at $url responded, but the browser blocked it as a '
+            'cross-origin request (CORS). Set LAIW_CORS_ORIGINS to include this '
+            "app's origin on the backend `/api/version`.",
+        detail: url,
+      );
 
   final ApiErrorCode code;
   final String message;

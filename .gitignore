@@ -34,3 +34,9 @@ web-dist/
 .idea/
 .vscode/
 *.log
+
+# Temporary public tunnel URL (never commit)
+.tunnel_url
+
+# Local cloudflared binary (download, never commit)
+bin/cloudflared

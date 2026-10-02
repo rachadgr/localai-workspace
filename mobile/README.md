@@ -36,14 +36,48 @@ Authentication uses the backend's real JWT flow (`/api/auth/login`,
 
 ## Configuration
 
-On the sign-in screen, set the **Server URL** to your backend:
+The backend URL is resolved in this order — **it is never hardcoded**:
 
-* `http://10.0.2.2:5060` — the host machine from the Android emulator (default)
-* `http://<your-lan-ip>:5060` — from a physical device on the same network
-* `https://<your-host>` — a remote/tunnelled deployment
+1. a value the user saved in the app (**Settings → Server URL** / the sign-in field), or
+2. the compile-time default baked in with `--dart-define=ASAF_API_BASE_URL=<url>`, or
+3. a **development-only** loopback fallback (`10.0.2.2:5060` on the Android
+   emulator, `localhost:5060` elsewhere).
 
-Cleartext HTTP is enabled (`usesCleartextTraffic="true"`) so local development
-servers work out of the box.
+So a new (temporary) tunnel URL can be supplied without touching the source:
+
+```bash
+# Bake it in at build time:
+flutter build apk --release --dart-define=ASAF_API_BASE_URL=https://<tunnel>.trycloudflare.com
+
+# …or type it into the app's Server URL field at runtime.
+```
+
+Common values:
+
+* `https://<tunnel>.trycloudflare.com` — the public HTTPS **tunnel URL** (use this
+  for a backend running on Kaggle/Colab; the phone cannot reach a notebook directly)
+* `http://<your-lan-ip>:5060` — a physical device on the same Wi-Fi as the host
+* `http://10.0.2.2:5060` — **Android emulator only** (host loopback alias)
+
+The sign-in screen includes a **Test connection** button that probes
+`/api/health` and reports reachability. Cleartext HTTP stays enabled
+(`usesCleartextTraffic="true"`) so local/LAN servers work; public tunnels are HTTPS.
+
+### Bring your own backend (Kaggle / Colab)
+
+Start the API (`0.0.0.0:5060`), then expose it with a public HTTPS tunnel and
+pass the URL to the app:
+
+```bash
+# 1) backend (from the repo root)
+python -m scripts.serve                 # binds 0.0.0.0:5060
+
+# 2) public HTTPS tunnel (cloudflared) — prints the URL + the exact build command
+python -m scripts.tunnel --print-build
+```
+
+The JWT is stored in **secure storage** (`flutter_secure_storage`), never in
+plaintext preferences; only the non-secret server URL is kept in `SharedPreferences`.
 
 ## Build
 

@@ -76,6 +76,7 @@ class _HomeShellState extends State<HomeShell> {
       children: [
         _topBar(item, showMenu: !wide),
         const Divider(height: 1),
+        _connectivityBanner(),
         Expanded(child: IndexedStack(index: _index, children: _screens)),
       ],
     );
@@ -100,8 +101,39 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Widget _topBar(_NavItem item, {required bool showMenu}) {
+  /// A slim banner shown only when the studio failed to load, e.g. because the
+  /// backend is unreachable or the URL is wrong — so connectivity issues are
+  /// impossible to miss.
+  Widget _connectivityBanner() {
     final store = context.watch<StudioStore>();
+    if (store.error == null) return const SizedBox.shrink();
+    final offline = AppConfig.baseUrl;
+    return Container(
+      width: double.infinity,
+      color: AsafColors.statusError.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off, size: 18, color: AsafColors.statusError),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Cannot reach $offline. Check the server URL in Settings.',
+              style: AsafText.small.copyWith(color: AsafColors.textPrimary),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: () => _select(7),
+            icon: const Icon(Icons.settings, size: 16),
+            label: const Text('Settings'),
+          ),
+          IconButton(onPressed: () => store.refreshAll(), icon: const Icon(Icons.refresh, size: 18), tooltip: 'Retry'),
+        ],
+      ),
+    );
+  }
+
+  Widget _topBar(_NavItem item, {required bool showMenu}) {    final store = context.watch<StudioStore>();
     return Container(
       color: AsafColors.background,
       padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),

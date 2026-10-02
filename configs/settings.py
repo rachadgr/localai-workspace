@@ -154,7 +154,13 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = Field(default_factory=lambda: int(os.environ.get("LAIW_RATE_LIMIT", "240")))
 
     # ------------------------------------------------------------ runtime
+    # CORS: "*" (default) reflects any origin, which is what a self-hosted
+    # mobile-first deployment needs (the Android app sends no Origin header at
+    # all, and web previews run from many origins). Set LAIW_CORS_ORIGINS to a
+    # comma-separated list to lock it down, and/or LAIW_CORS_ORIGIN_REGEX for a
+    # regex match (e.g. "^https://.*\\.trycloudflare\\.com$").
     cors_origins: str = Field(default_factory=lambda: os.environ.get("LAIW_CORS_ORIGINS", "*"))
+    cors_origin_regex: str = Field(default_factory=lambda: os.environ.get("LAIW_CORS_ORIGIN_REGEX", ""))
     log_level: str = Field(default_factory=lambda: os.environ.get("LAIW_LOG_LEVEL", "INFO"))
 
     # --------------------------------------------------------------- flags

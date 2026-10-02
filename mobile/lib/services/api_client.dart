@@ -17,6 +17,10 @@ class AsafApi {
   final http.Client _client;
   String? _token;
 
+  /// Invoked when the backend rejects the bearer token (HTTP 401) while a token
+  /// is set — lets the session store clear an expired/invalidated session.
+  void Function()? onUnauthorized;
+
   void setToken(String? token) => _token = token;
   String? get token => _token;
 
@@ -50,6 +54,12 @@ class AsafApi {
     if (res.statusCode >= 200 && res.statusCode < 300) {
       return parsed;
     }
+    // A rejected token means the session is dead: notify the session store so it
+    // can sign the user out. `/api/auth/login|register` legitimately return 401
+    // for wrong credentials — those must NOT clear a session.
+    if (res.statusCode == 401 && _token != null && _token!.isNotEmpty) {
+      onUnauthorized?.call();
+    }
     String detail = '';
     if (parsed is Map && parsed['detail'] != null) {
       final d = parsed['detail'];
@@ -62,39 +72,38 @@ class AsafApi {
     throw ApiException.fromStatus(res.statusCode, detail);
   }
 
-  Future<dynamic> _get(String path, {Map<String, String>? query}) async {
-    final uri = Uri.parse(AppConfig.api(path)).replace(queryParameters: query);
+  /// Runs [request], translating transport failures into a structured
+  /// [ApiException]. Decoding happens *outside* this helper so a genuine
+  /// HTTP error status is never mistaken for a network problem.
+  Future<http.Response> _send(Future<http.Response> Function() request, String path) async {
     try {
-      final res = await _client.get(uri, headers: _headers(json: false)).timeout(_timeout(path));
-      return _decode(res);
+      return await request().timeout(_timeout(path));
     } on TimeoutException {
       throw ApiException(ApiErrorCode.timeout, 'The request timed out. The runtime may be busy.');
-    } on http.ClientException catch (e) {
-      throw ApiException(ApiErrorCode.network, 'Cannot reach ASAF AI backend at ${AppConfig.baseUrl}. (${e.message})');
+    } on ApiException {
+      rethrow;
+    } catch (e) {
+      throw ApiException.unreachable(AppConfig.baseUrl, reason: e.toString());
     }
+  }
+
+  Future<dynamic> _get(String path, {Map<String, String>? query}) async {
+    final uri = Uri.parse(AppConfig.api(path)).replace(queryParameters: query);
+    final res = await _send(() => _client.get(uri, headers: _headers(json: false)), path);
+    return _decode(res);
   }
 
   Future<dynamic> _post(String path, Map<String, dynamic> body) async {
     final uri = Uri.parse(AppConfig.api(path));
-    try {
-      final res = await _client.post(uri, headers: _headers(), body: jsonEncode(body)).timeout(_timeout(path));
-      return _decode(res);
-    } on TimeoutException {
-      throw ApiException(ApiErrorCode.timeout, 'The request timed out. The runtime may be busy.');
-    } on http.ClientException catch (e) {
-      throw ApiException(ApiErrorCode.network, 'Cannot reach ASAF AI backend at ${AppConfig.baseUrl}. (${e.message})');
-    }
+    final res = await _send(() => _client.post(uri, headers: _headers(), body: jsonEncode(body)), path);
+    return _decode(res);
   }
 
   Future<dynamic> _delete(String path) async {
     // Kept for the job-cancel surface; wired where a job id is known.
     final uri = Uri.parse(AppConfig.api(path));
-    try {
-      final res = await _client.delete(uri, headers: _headers(json: false)).timeout(_timeout(path));
-      return _decode(res);
-    } on http.ClientException catch (e) {
-      throw ApiException(ApiErrorCode.network, 'Cannot reach ASAF AI backend at ${AppConfig.baseUrl}. (${e.message})');
-    }
+    final res = await _send(() => _client.delete(uri, headers: _headers(json: false)), path);
+    return _decode(res);
   }
 
   /// Cancel a running job (`DELETE /api/jobs/{job_id}`).
@@ -107,6 +116,17 @@ class AsafApi {
 
   // --------------------------------------------------------------- system
   Future<Map<String, dynamic>> health() async => Map<String, dynamic>.from(await _get('/api/health') as Map);
+
+  /// Lightweight reachability probe used by the connection UI. Never throws:
+  /// `true` means `/api/health` answered with a 2xx.
+  Future<bool> ping() async {
+    try {
+      await health();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   Future<Map<String, dynamic>> version() async => Map<String, dynamic>.from(await _get('/api/version') as Map);
 
@@ -223,8 +243,8 @@ class AsafApi {
     final http.StreamedResponse streamed;
     try {
       streamed = await _client.send(req);
-    } on http.ClientException catch (e) {
-      throw ApiException(ApiErrorCode.network, 'Cannot reach ASAF AI backend. (${e.message})');
+    } catch (e) {
+      throw ApiException.unreachable(AppConfig.baseUrl, reason: e.toString());
     }
     if (streamed.statusCode >= 400) {
       final raw = await streamed.stream.bytesToString();

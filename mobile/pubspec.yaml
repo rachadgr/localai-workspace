@@ -19,11 +19,15 @@ dependencies:
 
   # Local persistence for the session token / server URL
   shared_preferences: ^2.5.3
+  flutter_secure_storage: ^10.3.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  # Ships TestFlutterSecureStoragePlatform so secure-storage behaviour can be
+  # unit-tested deterministically.
+  flutter_secure_storage_platform_interface: ^2.1.1
 
 flutter:
   uses-material-design: true
