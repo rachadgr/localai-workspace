@@ -60,4 +60,10 @@ def auth_client(client):
     assert resp.status_code == 200, resp.text
     token = resp.json()["access_token"]
     client.headers.update({"Authorization": f"Bearer {token}"})
-    return client
+    try:
+        yield client
+    finally:
+        # The ``client`` fixture is session-scoped, so the auth header we injected
+        # would otherwise leak into later unauthenticated tests (e.g. the auth
+        # boundary tests). Remove it when this fixture is torn down.
+        client.headers.pop("Authorization", None)

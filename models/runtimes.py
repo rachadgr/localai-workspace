@@ -155,7 +155,16 @@ _RUNTIMES: tuple[RuntimeDescriptor, ...] = (
         local=True,
         adapter="LocalAIAdapter",
         supported=True,
-        surfaces=(SURFACE_CHAT, SURFACE_VISION, SURFACE_EMBEDDING, SURFACE_IMAGE_GENERATION),
+        # NOTE: unlike the runtime-matrix's generic capability surface, *image
+        # generation* is deliberately NOT advertised here. It is transactionally
+        # served by the dedicated image tool through LAIW_IMAGE_PROVIDER_URL (which
+        # may point at a LocalAI /v1/images/generations endpoint), exactly like
+        # every other image provider. Keeping it out of the local-generation
+        # surfaces keeps the "no local generation runtime is wired for image/video"
+        # honesty invariant intact (see test_model_provisioning.py) while LocalAI's
+        # chat / vision / embedding surfaces -- the ones the registry actually probes
+        # via /v1/models + /v1/chat/completions + /v1/embeddings -- remain supported.
+        surfaces=(SURFACE_CHAT, SURFACE_VISION, SURFACE_EMBEDDING),
         modalities=(MODALITY_TEXT, MODALITY_IMAGE, MODALITY_EMBEDDING),
     ),
     RuntimeDescriptor(

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../core/app_config.dart';
 import '../core/theme.dart';
 import '../state/auth_store.dart';
+import '../state/locale_store.dart';
 import '../state/studio_store.dart';
 import 'chat_screen.dart';
 import 'dashboard_screen.dart';
@@ -16,7 +17,7 @@ import 'video_screen.dart';
 import 'workspace_screen.dart';
 
 /// ASAF AI Studio shell: a 9-section workspace with a permanent rail on wide
-/// screens and a drawer on phones.
+/// screens and a drawer on phones. Fully RTL-aware (Arabic first).
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -28,17 +29,17 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  static const _items = <_NavItem>[
-    _NavItem('Dashboard', Icons.dashboard_outlined, Icons.dashboard),
-    _NavItem('Chat', Icons.forum_outlined, Icons.forum),
-    _NavItem('Image', Icons.image_outlined, Icons.image),
-    _NavItem('Video', Icons.movie_outlined, Icons.movie),
-    _NavItem('Workspace', Icons.folder_copy_outlined, Icons.folder_copy),
-    _NavItem('Models', Icons.memory_outlined, Icons.memory),
-    _NavItem('Providers', Icons.hub_outlined, Icons.hub),
-    _NavItem('History', Icons.history_outlined, Icons.history),
-    _NavItem('Settings', Icons.settings_outlined, Icons.settings),
-  ];
+  List<_NavItem> _items(AsafLocalizations t) => <_NavItem>[
+        _NavItem(t.navDashboard, Icons.dashboard_outlined, Icons.dashboard),
+        _NavItem(t.navChat, Icons.forum_outlined, Icons.forum),
+        _NavItem(t.navImage, Icons.image_outlined, Icons.image),
+        _NavItem(t.navVideo, Icons.movie_outlined, Icons.movie),
+        _NavItem(t.navWorkspace, Icons.folder_copy_outlined, Icons.folder_copy),
+        _NavItem(t.navModels, Icons.memory_outlined, Icons.memory),
+        _NavItem(t.navProviders, Icons.hub_outlined, Icons.hub),
+        _NavItem(t.navHistory, Icons.history_outlined, Icons.history),
+        _NavItem(t.navSettings, Icons.settings_outlined, Icons.settings),
+      ];
 
   late final List<Widget> _screens = <Widget>[
     DashboardScreen(onNavigate: _select),
@@ -72,14 +73,16 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    final t = context.l10n;
+    final items = _items(t);
     final wide = MediaQuery.of(context).size.width >= 900;
-    final item = _items[_index];
+    final item = items[_index];
 
     final body = Column(
       children: [
-        _topBar(item, showMenu: !wide),
+        _topBar(t, item, items, showMenu: !wide),
         const Divider(height: 1),
-        _connectivityBanner(),
+        _connectivityBanner(t),
         Expanded(child: IndexedStack(index: _index, children: _screens)),
       ],
     );
@@ -87,7 +90,7 @@ class _HomeShellState extends State<HomeShell> {
     if (!wide) {
       return Scaffold(
         key: _scaffoldKey,
-        drawer: _drawer(),
+        drawer: _drawer(t, items),
         body: body,
       );
     }
@@ -96,7 +99,7 @@ class _HomeShellState extends State<HomeShell> {
       key: _scaffoldKey,
       body: Row(
         children: [
-          _rail(),
+          _rail(t, items),
           const VerticalDivider(width: 1),
           Expanded(child: body),
         ],
@@ -107,7 +110,7 @@ class _HomeShellState extends State<HomeShell> {
   /// A slim banner shown only when the studio failed to load, e.g. because the
   /// backend is unreachable or the URL is wrong — so connectivity issues are
   /// impossible to miss.
-  Widget _connectivityBanner() {
+  Widget _connectivityBanner(AsafLocalizations t) {
     final store = context.watch<StudioStore>();
     if (store.error == null) return const SizedBox.shrink();
     final offline = AppConfig.baseUrl;
@@ -121,22 +124,23 @@ class _HomeShellState extends State<HomeShell> {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Cannot reach $offline. Check the server URL in Settings.',
+              t.connectivityCannotReach(offline),
               style: AsafText.small.copyWith(color: AsafColors.textPrimary),
             ),
           ),
           TextButton.icon(
             onPressed: () => _select(8),
             icon: const Icon(Icons.settings, size: 16),
-            label: const Text('Settings'),
+            label: Text(t.navSettings),
           ),
-          IconButton(onPressed: () => store.refreshAll(), icon: const Icon(Icons.refresh, size: 18), tooltip: 'Retry'),
+          IconButton(onPressed: () => store.refreshAll(), icon: const Icon(Icons.refresh, size: 18), tooltip: t.retry),
         ],
       ),
     );
   }
 
-  Widget _topBar(_NavItem item, {required bool showMenu}) {    final store = context.watch<StudioStore>();
+  Widget _topBar(AsafLocalizations t, _NavItem item, List<_NavItem> items, {required bool showMenu}) {
+    final store = context.watch<StudioStore>();
     return Container(
       color: AsafColors.background,
       padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
@@ -162,23 +166,28 @@ class _HomeShellState extends State<HomeShell> {
                 padding: EdgeInsets.only(right: 12),
                 child: SizedBox(height: 16, width: 16, child: CircularProgressIndicator(strokeWidth: 2)),
               ),
-            IconButton(onPressed: () => store.refreshAll(), icon: const Icon(Icons.refresh, size: 20), tooltip: 'Refresh'),
+            IconButton(onPressed: () => store.refreshAll(), icon: const Icon(Icons.refresh, size: 20), tooltip: t.refresh),
           ],
         ),
       ),
     );
   }
 
-  Widget _rail() {
+  Widget _rail(AsafLocalizations t, List<_NavItem> items) {
     final auth = context.watch<AuthStore>();
     return Container(
-      width: 220,
+      width: 232,
       color: AsafColors.surface,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top + 20, left: 18, right: 18, bottom: 16),
+            padding: EdgeInsets.only(
+              top: MediaQuery.of(context).padding.top + 20,
+              left: 18,
+              right: 18,
+              bottom: 16,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -198,7 +207,7 @@ class _HomeShellState extends State<HomeShell> {
                   ],
                 ),
                 const SizedBox(height: 6),
-                Text('AI Creation Studio', style: AsafText.small),
+                Text(t.appTagline, style: AsafText.small),
               ],
             ),
           ),
@@ -206,7 +215,7 @@ class _HomeShellState extends State<HomeShell> {
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 10),
               children: [
-                for (var i = 0; i < _items.length; i++) _railTile(i),
+                for (var i = 0; i < items.length; i++) _railTile(items, i),
               ],
             ),
           ),
@@ -226,9 +235,9 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Widget _railTile(int i) {
+  Widget _railTile(List<_NavItem> items, int i) {
     final selected = _index == i;
-    final item = _items[i];
+    final item = items[i];
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Material(
@@ -252,7 +261,7 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Widget _drawer() {
+  Widget _drawer(AsafLocalizations t, List<_NavItem> items) {
     return Drawer(
       backgroundColor: AsafColors.surface,
       child: SafeArea(
@@ -281,7 +290,7 @@ class _HomeShellState extends State<HomeShell> {
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                children: [for (var i = 0; i < _items.length; i++) _railTile(i)],
+                children: [for (var i = 0; i < items.length; i++) _railTile(items, i)],
               ),
             ),
           ],

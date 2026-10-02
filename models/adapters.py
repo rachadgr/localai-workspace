@@ -991,6 +991,43 @@ class LocalAIAdapter(OpenAICompatibleAdapter):
         except Exception:  # noqa: BLE001
             return STATUS_UNAVAILABLE
 
+    @staticmethod
+    def _normalize_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+        """Collapse consecutive same-role turns into one message.
+
+        LocalAI runs GGUF chat models whose tokenizer chat templates are strict:
+        the Gemma-family template (and several others) ``raise_exception`` unless the
+        conversation is a single leading ``system`` turn followed by strict
+        ``user``/``assistant`` alternation. This caller naturally emits two leading
+        ``system`` turns (the tool's default instruction **plus** a live runtime-facts
+        block) and can repeat a role when a system turn is injected mid-conversation,
+        which makes LocalAI answer HTTP 500 ("Conversation roles must alternate").
+
+        Folding adjacent same-role messages into one (newline-joined) message is a
+        semantics-preserving normalisation for a chat template: the model still sees
+        every token, only the turn boundaries the template rejects are removed. It is
+        applied here — at the LocalAI boundary only — so the other providers keep
+        their native multi-message behaviour untouched.
+        """
+        merged: list[ChatMessage] = []
+        for msg in messages:
+            if merged and merged[-1].role == msg.role:
+                prev = merged[-1]
+                prev.content = f"{prev.content}\n\n{msg.content}" if prev.content else msg.content
+                if msg.images:
+                    prev.images = list(prev.images) + list(msg.images)
+                if msg.name and not prev.name:
+                    prev.name = msg.name
+            else:
+                merged.append(ChatMessage(role=msg.role, content=msg.content, name=msg.name, images=list(msg.images)))
+        return merged
+
+    def complete(self, messages: list[ChatMessage], model: str, **opts: Any) -> Completion:
+        return super().complete(self._normalize_messages(messages), model, **opts)
+
+    def stream(self, messages: list[ChatMessage], model: str, **opts: Any) -> Iterator[str]:
+        return super().stream(self._normalize_messages(messages), model, **opts)
+
 
 # --------------------------------------------------------------------------- #
 # Echo (deterministic, tests only)

@@ -53,7 +53,9 @@ python -m scripts.seed
 python -m scripts.serve            # http://localhost:5060
 ```
 
-Demo login: `demo@localai.workspace` / `demo1234`
+Then register your own account from the sign-in screen (or, for automated
+tests only, seed a local-only account — never use demo credentials in a public
+deployment).
 
 ### With Docker
 

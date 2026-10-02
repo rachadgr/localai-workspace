@@ -35,7 +35,9 @@ def main() -> None:
         created = seed_demo()
         print(f"seeded: {created}")
         if created.get("users"):
-            print("demo login -> demo@localai.workspace / demo1234")
+            # Local development helper only — never print demo credentials to a
+            # shared/public log. Register your own account for real use.
+            print("seeded a local development account (see database/seed.py)")
 
 
 if __name__ == "__main__":

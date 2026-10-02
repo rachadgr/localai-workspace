@@ -6,9 +6,10 @@ import '../core/errors.dart';
 import '../core/theme.dart';
 import '../services/api_client.dart';
 import '../state/auth_store.dart';
+import '../state/locale_store.dart';
 import '../widgets/common.dart';
 
-/// ASAF AI sign-in / registration screen.
+/// ASAF AI sign-in / registration screen (Arabic-first, RTL aware).
 ///
 /// Uses the real `/api/auth/login` and `/api/auth/register` routes. The backend
 /// URL is editable so the user can point the client at their own server.
@@ -55,8 +56,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _testConnection() async {
     FocusScope.of(context).unfocus();
+    final t = context.l10n;
     if (!AppConfig.isValid(_baseUrl.text)) {
-      setState(() => _error = 'Enter a valid server URL (e.g. https://your-tunnel.trycloudflare.com).');
+      setState(() => _error = t.loginInvalidUrl);
       return;
     }
     final api = context.read<AsafApi>();
@@ -74,13 +76,13 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
       setState(() => _reachable = ok);
       if (!ok) {
-        setState(() => _error = 'No response from ${AppConfig.baseUrl}/api/health. Is the server running and reachable?');
+        setState(() => _error = t.loginNoResponse(AppConfig.baseUrl));
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _reachable = false;
-        _error = 'Connection test failed: $e';
+        _error = t.loginTestFailed('$e');
       });
     } finally {
       if (mounted) setState(() => _testing = false);
@@ -89,9 +91,10 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
+    final t = context.l10n;
     final auth = context.read<AuthStore>();
     if (!AppConfig.isValid(_baseUrl.text)) {
-      setState(() => _error = 'Enter a valid server URL (e.g. https://your-tunnel.trycloudflare.com).');
+      setState(() => _error = t.loginInvalidUrl);
       return;
     }
     setState(() {
@@ -109,7 +112,7 @@ class _LoginScreenState extends State<LoginScreen> {
     } on ApiException catch (e) {
       setState(() => _error = e.message);
     } catch (e) {
-      setState(() => _error = 'Sign in failed: $e');
+      setState(() => _error = t.loginFailed('$e'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -117,6 +120,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final t = context.l10n;
     return Scaffold(
       body: SafeArea(
         child: Center(
@@ -128,7 +132,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _brand(),
+                  _brand(t),
                   const SizedBox(height: 28),
                   Card(
                     child: Padding(
@@ -136,19 +140,17 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Text(_register ? 'Create your account' : 'Sign in to your studio', style: AsafText.h2),
+                          Text(_register ? t.loginRegisterTitle : t.loginSignInTitle, style: AsafText.h2),
                           const SizedBox(height: 6),
                           Text(
-                            _register
-                                ? 'Registration may be disabled by the server administrator.'
-                                : 'Authenticate against your ASAF AI server to continue.',
+                            _register ? t.loginRegisterSubtitle : t.loginSignInSubtitle,
                             style: AsafText.small,
                           ),
                           const SizedBox(height: 20),
                           if (_register) ...[
                             TextField(
                               controller: _name,
-                              decoration: const InputDecoration(labelText: 'Display name', hintText: 'ASAF Creator'),
+                              decoration: InputDecoration(labelText: t.loginDisplayName, hintText: t.loginDisplayNameHint),
                               textInputAction: TextInputAction.next,
                             ),
                             const SizedBox(height: 14),
@@ -156,7 +158,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           TextField(
                             controller: _email,
                             keyboardType: TextInputType.emailAddress,
-                            decoration: const InputDecoration(labelText: 'Email', hintText: 'demo@localai.workspace'),
+                            decoration: InputDecoration(labelText: t.loginEmail, hintText: t.loginEmailHint),
                             textInputAction: TextInputAction.next,
                           ),
                           const SizedBox(height: 14),
@@ -164,7 +166,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             controller: _password,
                             obscureText: _obscure,
                             decoration: InputDecoration(
-                              labelText: 'Password',
+                              labelText: t.loginPassword,
                               suffixIcon: IconButton(
                                 icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, size: 20),
                                 onPressed: () => setState(() => _obscure = !_obscure),
@@ -175,11 +177,10 @@ class _LoginScreenState extends State<LoginScreen> {
                           const SizedBox(height: 14),
                           TextField(
                             controller: _baseUrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Server URL',
-                              hintText: 'https://your-tunnel.trycloudflare.com',
-                              helperText: 'Your ASAF AI backend URL. Use the public HTTPS tunnel '
-                                  'URL for a hosted (Kaggle/Colab) server, or your LAN IP on the same Wi-Fi.',
+                            decoration: InputDecoration(
+                              labelText: t.loginServerUrl,
+                              hintText: t.loginServerUrlHint,
+                              helperText: t.loginServerUrlHelper,
                               helperStyle: AsafText.small,
                             ),
                             keyboardType: TextInputType.url,
@@ -196,7 +197,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                         size: 18,
                                         color: _reachable == true ? AsafColors.statusAvailable : null,
                                       ),
-                                label: Text(_reachable == true ? 'Server reachable' : 'Test connection'),
+                                label: Text(_reachable == true ? t.loginServerReachable : t.loginTestConnection),
                               ),
                               const SizedBox(width: 10),
                               if (_reachable == true)
@@ -214,7 +215,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             onPressed: _busy ? null : _submit,
                             child: _busy
                                 ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : Text(_register ? 'Create account' : 'Sign in'),
+                                : Text(_register ? t.loginCreateAccount : t.loginSignIn),
                           ),
                           const SizedBox(height: 8),
                           TextButton(
@@ -224,7 +225,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                       _register = !_register;
                                       _error = null;
                                     }),
-                            child: Text(_register ? 'I already have an account' : 'Create a new account'),
+                            child: Text(_register ? t.loginHaveAccount : t.loginNeedAccount),
                           ),
                         ],
                       ),
@@ -232,7 +233,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'ASAF AI · AI Creation & Generation Studio',
+                    'ASAF AI · ${t.appTagline}',
                     textAlign: TextAlign.center,
                     style: AsafText.small,
                   ),
@@ -245,7 +246,7 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _brand() {
+  Widget _brand(AsafLocalizations t) {
     return Column(
       children: [
         Container(
@@ -266,7 +267,7 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
         const SizedBox(height: 4),
-        Text('AI Creation & Generation Studio', style: AsafText.small),
+        Text(t.appTagline, style: AsafText.small),
       ],
     );
   }
