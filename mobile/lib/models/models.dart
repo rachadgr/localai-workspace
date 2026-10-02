@@ -92,6 +92,8 @@ class ProviderEntry {
     required this.local,
     required this.endpoint,
     required this.error,
+    this.modelCount = 0,
+    this.availableCount = 0,
   });
 
   final String name;
@@ -100,6 +102,10 @@ class ProviderEntry {
   final bool local;
   final String endpoint;
   final String error;
+  final int modelCount;
+  final int availableCount;
+
+  bool get available => status == 'AVAILABLE';
 
   factory ProviderEntry.fromJson(Map<String, dynamic> j) => ProviderEntry(
         name: j['name']?.toString() ?? j['provider']?.toString() ?? '',
@@ -108,6 +114,8 @@ class ProviderEntry {
         local: j['local'] == true,
         endpoint: j['endpoint']?.toString() ?? '',
         error: j['error']?.toString() ?? '',
+        modelCount: (j['model_count'] as num?)?.toInt() ?? 0,
+        availableCount: (j['available_count'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -144,7 +152,7 @@ class RouterDecision {
       );
 }
 
-/// One entry of generation history (`/api/tasks`).
+/// One entry of generation history (`/api/generations` or `/api/tasks`).
 class HistoryTask {
   HistoryTask({
     required this.taskId,
@@ -154,6 +162,11 @@ class HistoryTask {
     required this.projectId,
     required this.createdAt,
     required this.error,
+    this.model = '',
+    this.provider = '',
+    this.isGeneration = false,
+    this.summary = '',
+    this.outputs = const [],
     this.progress = 0,
   });
 
@@ -164,6 +177,11 @@ class HistoryTask {
   final String projectId;
   final String createdAt;
   final String error;
+  final String model;
+  final String provider;
+  final bool isGeneration;
+  final String summary;
+  final List<Map<String, dynamic>> outputs;
   final double progress;
 
   String get when {
@@ -174,16 +192,24 @@ class HistoryTask {
     return '${local.year}-${_pad2(local.month)}-${_pad2(local.day)} ${_pad2(local.hour)}:${_pad2(local.minute)}';
   }
 
+  /// The model used, or a neutral placeholder when the backend did not record one.
+  String get modelLabel => model.isEmpty ? '—' : model;
+
   static String _pad2(int n) => n < 10 ? '0$n' : '$n';
 
   factory HistoryTask.fromJson(Map<String, dynamic> j) => HistoryTask(
-        taskId: j['task_id']?.toString() ?? '',
+        taskId: (j['task_id'] ?? j['id'])?.toString() ?? '',
         kind: j['kind']?.toString() ?? '',
         title: j['title']?.toString() ?? '',
         status: j['status']?.toString() ?? 'UNKNOWN',
         projectId: j['project_id']?.toString() ?? '',
-        createdAt: j['started_at']?.toString() ?? '',
+        createdAt: (j['started_at'] ?? j['created_at'])?.toString() ?? '',
         error: j['error']?.toString() ?? '',
+        model: j['model']?.toString() ?? '',
+        provider: j['provider']?.toString() ?? '',
+        isGeneration: j['is_generation'] == true,
+        summary: j['summary']?.toString() ?? '',
+        outputs: ((j['output'] ?? j['outputs']) as List?)?.map((e) => (e as Map).cast<String, dynamic>()).toList() ?? const [],
         progress: (j['progress'] as num?)?.toDouble() ?? 0,
       );
 }
@@ -206,6 +232,88 @@ class ModuleResult {
         response: j['response']?.toString() ?? '',
         data: (j['data'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{},
         error: j['error']?.toString() ?? '',
+      );
+}
+
+/// A real, downloadable output artifact (document / slide / image / file).
+class ArtifactRef {
+  ArtifactRef({
+    required this.id,
+    required this.name,
+    required this.type,
+    required this.mimeType,
+    required this.size,
+    this.createdAt = '',
+    this.downloadUrl = '',
+    this.previewUrl = '',
+  });
+
+  final String id;
+  final String name;
+  final String type;
+  final String mimeType;
+  final int size;
+  final String createdAt;
+  final String downloadUrl;
+  final String previewUrl;
+
+  factory ArtifactRef.fromJson(Map<String, dynamic> j) => ArtifactRef(
+        id: j['id']?.toString() ?? '',
+        name: j['name']?.toString() ?? '',
+        type: j['type']?.toString() ?? '',
+        mimeType: j['mime_type']?.toString() ?? '',
+        size: (j['size'] as num?)?.toInt() ?? 0,
+        createdAt: j['created_at']?.toString() ?? '',
+        downloadUrl: j['download_url']?.toString() ?? '',
+        previewUrl: j['preview_url']?.toString() ?? '',
+      );
+
+  String get sizeLabel {
+    if (size < 1024) return '$size B';
+    if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
+    return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+}
+
+/// The typed result of a real generation request (image, or any module).
+class GenerationResult {
+  GenerationResult({
+    required this.taskId,
+    required this.tool,
+    required this.status,
+    required this.summary,
+    required this.response,
+    required this.error,
+    required this.errorClass,
+    required this.artifacts,
+    required this.data,
+  });
+
+  final String taskId;
+  final String tool;
+  final String status;
+  final String summary;
+  final String response;
+  final String error;
+  final String errorClass;
+  final List<ArtifactRef> artifacts;
+  final Map<String, dynamic> data;
+
+  bool get success => status == 'SUCCESS';
+  bool get unavailable => status == 'UNAVAILABLE';
+
+  factory GenerationResult.fromJson(Map<String, dynamic> j) => GenerationResult(
+        taskId: j['task_id']?.toString() ?? '',
+        tool: j['tool']?.toString() ?? '',
+        status: j['status']?.toString() ?? 'UNKNOWN',
+        summary: j['summary']?.toString() ?? '',
+        response: j['response']?.toString() ?? '',
+        error: j['error']?.toString() ?? '',
+        errorClass: j['error_class']?.toString() ?? '',
+        artifacts: ((j['artifacts'] as List?) ?? [])
+            .map((e) => ArtifactRef.fromJson((e as Map).cast<String, dynamic>()))
+            .toList(),
+        data: (j['data'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{},
       );
 }
 

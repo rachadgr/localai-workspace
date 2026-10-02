@@ -324,6 +324,36 @@ class AsafApi {
 
   Future<Map<String, dynamic>> task(String id) async => Map<String, dynamic>.from(await _get('/api/tasks/$id') as Map);
 
+  // ----------------------------------------------------------- workspace
+  /// Authenticated dashboard aggregate (projects, recent generations,
+  /// documents, slides, models, providers, runtimes, quick actions).
+  Future<Map<String, dynamic>> dashboard({int limit = 8}) async =>
+      Map<String, dynamic>.from(await _get('/api/dashboard', query: {'limit': '$limit'}) as Map);
+
+  /// Real generation history (id, task, model, provider, status, time, output).
+  Future<Map<String, dynamic>> generations({String? projectId, String? kind, int limit = 50}) async {
+    final q = <String, String>{'limit': '$limit'};
+    if (projectId != null) q['project_id'] = projectId;
+    if (kind != null && kind.isNotEmpty) q['kind'] = kind;
+    return Map<String, dynamic>.from(await _get('/api/generations', query: q) as Map);
+  }
+
+  Future<Map<String, dynamic>> documents({String? projectId, int limit = 50}) async {
+    final q = <String, String>{'limit': '$limit'};
+    if (projectId != null) q['project_id'] = projectId;
+    return Map<String, dynamic>.from(await _get('/api/documents', query: q) as Map);
+  }
+
+  Future<Map<String, dynamic>> slides({String? projectId, int limit = 50}) async {
+    final q = <String, String>{'limit': '$limit'};
+    if (projectId != null) q['project_id'] = projectId;
+    return Map<String, dynamic>.from(await _get('/api/slides', query: q) as Map);
+  }
+
+  /// Real per-project workspace view (conversations, artifacts, files, tasks).
+  Future<Map<String, dynamic>> workspace(String projectId) async =>
+      Map<String, dynamic>.from(await _get('/api/workspace/${Uri.encodeComponent(projectId)}') as Map);
+
   Future<Map<String, dynamic>> jobs({int limit = 50}) async =>
       Map<String, dynamic>.from(await _get('/api/jobs', query: {'limit': '$limit'}) as Map);
 

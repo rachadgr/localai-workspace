@@ -475,8 +475,8 @@ def classify_http_status(status_code: int) -> str:
 # --------------------------------------------------------------------------- #
 # Heuristic inference (used when a provider gives no metadata)
 # --------------------------------------------------------------------------- #
-_EMBEDDING_MARKERS = ("embed", "embedding", "bge", "text-embedding", "nomic-embed", "mxbai")
-_IMAGE_MARKERS = ("dall", "dalle", "image", "flux", "stable-diffusion", "sd-", "imagen", "midjourney", "sdxl", "seedream", "playground-v")
+_EMBEDDING_MARKERS = ("embed", "embedding", "bge", "text-embedding", "nomic-embed", "mxbai", "minilm")
+_IMAGE_MARKERS = ("dall", "dalle", "image", "flux", "stable-diffusion", "stablediffusion", "sd-", "imagen", "midjourney", "sdxl", "seedream", "playground-v")
 _VIDEO_MARKERS = ("video", "veo", "sora", "runway", "kling", "pika", "luma", "t2v", "i2v", "wan", "hunyuan", "cogvideo", "seedance", "hailuo", "ltx")
 _VISION_MARKERS = ("vision", "-vl", "vl-", "llava", "gpt-4o", "gpt-5", "gemini", "claude-3", "claude-4", "qwen-vl", "minicpm-v")
 _CODE_MARKERS = ("code", "coder", "codex", "deepseek-coder", "starcoder", "codestral")

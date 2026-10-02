@@ -12,7 +12,8 @@ import '../widgets/common.dart';
 ///
 /// Uses the real `/api/images` module. The backend reports `UNAVAILABLE` when no
 /// image provider is configured — this screen shows that honestly rather than a
-/// fabricated image.
+/// fabricated image. The model selector lists only image models that genuinely
+/// passed the backend's runtime gate.
 class ImageScreen extends StatefulWidget {
   const ImageScreen({super.key});
 
@@ -22,16 +23,19 @@ class ImageScreen extends StatefulWidget {
 
 class _ImageScreenState extends State<ImageScreen> {
   final _prompt = TextEditingController();
+  final _style = TextEditingController();
   String _action = 'brief';
   String _aspect = '1:1';
   int _variants = 1;
+  String _model = '';
   bool _busy = false;
-  ModuleResult? _result;
+  GenerationResult? _result;
   String? _error;
 
   @override
   void dispose() {
     _prompt.dispose();
+    _style.dispose();
     super.dispose();
   }
 
@@ -55,13 +59,15 @@ class _ImageScreenState extends State<ImageScreen> {
         description: _prompt.text.trim(),
         projectId: projectId,
         action: _action,
+        style: _style.text.trim(),
         aspectRatio: _aspect,
         variants: _variants,
+        model: _model,
       );
-      setState(() => _result = ModuleResult.fromJson(res));
-      if (store.activeProjectId != null) store.loadHistory();
+      setState(() => _result = GenerationResult.fromJson(res));
+      await store.loadHistory();
     } on ApiException catch (e) {
-      setState(() => _error = e.message);
+      setState(() => _error = '${errorCodeLabel(e.code)}: ${e.message}');
     } catch (e) {
       setState(() => _error = 'Image request failed: $e');
     } finally {
@@ -74,7 +80,7 @@ class _ImageScreenState extends State<ImageScreen> {
     final store = context.watch<StudioStore>();
     final imageModels = store.modelsForTask('image_generation');
     final providerConfigured = store.health?.imageProvider ?? false;
-    final configured = providerConfigured && imageModels.isNotEmpty;
+    final configured = providerConfigured || imageModels.isNotEmpty;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -82,17 +88,15 @@ class _ImageScreenState extends State<ImageScreen> {
         SectionCard(
           title: 'Image generation',
           icon: Icons.image_outlined,
-          action: StatusBadge(configured ? 'AVAILABLE' : 'UNAVAILABLE', dense: true),
+          action: StatusBadge(configured ? 'AVAILABLE' : 'NOT_CONFIGURED', dense: true),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (!configured)
-                InfoBanner(
+                const InfoBanner(
                   color: AsafColors.statusMisconfigured,
                   icon: Icons.warning_amber,
-                  message: providerConfigured
-                      ? 'An image provider is configured but no image model passed the runtime check. Requests may be served by the provider directly.'
-                      : 'No image provider is configured on the backend. Prompt/brief helpers work; actual image generation reports UNAVAILABLE.',
+                  message: 'No image provider is configured on the backend. Prompt/brief helpers work; actual image generation reports UNAVAILABLE (never a fabricated image).',
                 ),
               const SizedBox(height: 14),
               TextField(
@@ -105,6 +109,11 @@ class _ImageScreenState extends State<ImageScreen> {
                 ),
               ),
               const SizedBox(height: 14),
+              TextField(
+                controller: _style,
+                decoration: const InputDecoration(labelText: 'Style (optional)', hintText: 'photorealistic, 35mm, soft light'),
+              ),
+              const SizedBox(height: 14),
               Wrap(
                 spacing: 12,
                 runSpacing: 12,
@@ -112,6 +121,7 @@ class _ImageScreenState extends State<ImageScreen> {
                   _dropdown('Action', _action, const ['brief', 'prompt', 'generate', 'variant'], (v) => setState(() => _action = v)),
                   _dropdown('Aspect', _aspect, const ['1:1', '16:9', '9:16', '4:3', '3:4'], (v) => setState(() => _aspect = v)),
                   _dropdown('Variants', '$_variants', const ['1', '2', '3', '4'], (v) => setState(() => _variants = int.parse(v))),
+                  _modelDropdown(imageModels),
                 ],
               ),
               const SizedBox(height: 18),
@@ -128,43 +138,47 @@ class _ImageScreenState extends State<ImageScreen> {
         const SizedBox(height: 16),
         if (_error != null) InfoBanner(message: _error!, color: AsafColors.statusError, icon: Icons.error_outline),
         if (_result != null) _resultView(_result!),
-        if (imageModels.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          SectionCard(
-            title: 'Compatible image models',
-            icon: Icons.memory,
-            child: Column(
-              children: imageModels
-                  .map((m) => ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
-                        title: Text(m.id, style: AsafText.body.copyWith(color: AsafColors.textPrimary)),
-                        subtitle: Text(m.subtitle, style: AsafText.small),
-                        trailing: StatusBadge(m.status, dense: true),
-                      ))
-                  .toList(),
-            ),
-          ),
-        ],
+        const SizedBox(height: 16),
+        SectionCard(
+          title: 'Compatible image models',
+          icon: Icons.memory,
+          child: imageModels.isEmpty
+              ? const Text('No image model passed the runtime gate. Configure LAIW_IMAGE_PROVIDER_URL or install a local image model.', style: AsafText.body)
+              : Column(
+                  children: imageModels
+                      .map((m) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            dense: true,
+                            title: Text(m.id, style: AsafText.body.copyWith(color: AsafColors.textPrimary)),
+                            subtitle: Text(m.subtitle, style: AsafText.small),
+                            trailing: StatusBadge(m.status, dense: true),
+                          ))
+                      .toList(),
+                ),
+        ),
       ],
     );
   }
 
-  Widget _resultView(ModuleResult r) {
+  Widget _resultView(GenerationResult r) {
     return SectionCard(
       title: 'Result',
       icon: Icons.terminal,
-      action: StatusBadge(r.success ? 'AVAILABLE' : 'UNAVAILABLE', dense: true),
+      action: StatusBadge(r.success ? 'AVAILABLE' : (r.unavailable ? 'UNAVAILABLE' : 'ERROR'), dense: true),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          KeyValue('Task id', r.taskId),
           if (r.summary.isNotEmpty) ...[
+            const SizedBox(height: 6),
             Text(r.summary, style: AsafText.body.copyWith(color: AsafColors.textPrimary)),
-            const SizedBox(height: 12),
           ],
-          if (r.error.isNotEmpty) InfoBanner(message: r.error, color: AsafColors.statusError, icon: Icons.error_outline),
+          if (r.error.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            InfoBanner(message: r.error, color: AsafColors.statusError, icon: Icons.error_outline),
+          ],
           if (r.response.isNotEmpty) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),
@@ -172,12 +186,60 @@ class _ImageScreenState extends State<ImageScreen> {
               child: SelectableText(r.response, style: AsafText.mono),
             ),
           ],
-          if (r.data['images'] is List && (r.data['images'] as List).isNotEmpty) ...[
+          if (r.artifacts.isNotEmpty) ...[
             const SizedBox(height: 12),
-            Text('Artifacts:', style: AsafText.small),
+            Text('Artifacts', style: AsafText.h3),
             const SizedBox(height: 6),
-            ...(r.data['images'] as List).map((img) => Text(img.toString(), style: AsafText.small)),
+            ...r.artifacts.map((a) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.image_outlined, size: 17, color: AsafColors.primaryLight),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(a.name, style: AsafText.body.copyWith(color: AsafColors.textPrimary), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                      Text(a.sizeLabel, style: AsafText.small),
+                    ],
+                  ),
+                )),
           ],
+        ],
+      ),
+    );
+  }
+
+  Widget _modelDropdown(List<ModelEntry> models) {
+    final value = models.any((m) => m.id == _model) ? _model : '';
+    return SizedBox(
+      width: 190,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Model', style: AsafText.small),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: AsafColors.surfaceAlt,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AsafColors.border),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: value,
+                isExpanded: true,
+                dropdownColor: AsafColors.surfaceHigh,
+                hint: const Text('Provider default', style: AsafText.small),
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('Provider default', style: AsafText.small)),
+                  ...models.map((m) => DropdownMenuItem(
+                        value: m.id,
+                        child: Text(m.id, style: AsafText.body.copyWith(color: AsafColors.textPrimary), overflow: TextOverflow.ellipsis),
+                      )),
+                ],
+                onChanged: (v) => setState(() => _model = v ?? ''),
+              ),
+            ),
+          ),
         ],
       ),
     );

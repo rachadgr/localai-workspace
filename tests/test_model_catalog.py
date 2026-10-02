@@ -260,12 +260,15 @@ def test_catalog_entries_only_use_known_statuses():
 
 
 def test_local_provider_classification():
+    from models.catalog import LOCAL_PROVIDERS
+
     assert is_local_provider("ollama") is True
+    assert is_local_provider("localai") is True
     assert is_local_provider("openai") is False
     assert is_local_provider("") is False
-    # Every ollama entry must be flagged local; cloud vendors must not be.
+    # Every local-runtime entry must be flagged local; cloud vendors must not be.
     for entry in CATALOG:
-        if entry.provider == "ollama":
+        if entry.provider in LOCAL_PROVIDERS:
             assert entry.local is True
         else:
             assert entry.local is False

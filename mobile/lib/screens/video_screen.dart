@@ -10,7 +10,8 @@ import '../widgets/common.dart';
 /// Video generation workspace (experimental image-to-video runtime).
 ///
 /// The backend only serves this when a real generation runtime is genuinely
-/// wired and its weights are present locally. This screen surfaces the real
+/// wired and its weights are present locally. The model selector lists the real
+/// registrations from `/api/models/generation`; this screen surfaces the real
 /// runtime state and never pretends a clip was produced.
 class VideoScreen extends StatefulWidget {
   const VideoScreen({super.key});
@@ -22,8 +23,11 @@ class VideoScreen extends StatefulWidget {
 class _VideoScreenState extends State<VideoScreen> {
   final _image = TextEditingController();
   final _prompt = TextEditingController();
-  final _model = TextEditingController(text: 'wan2.2-i2v');
+  String _model = 'wan2.2-i2v';
   double _duration = 5;
+  int _width = 832;
+  int _height = 480;
+  int _fps = 16;
   bool _busy = false;
   Map<String, dynamic>? _result;
   String? _error;
@@ -32,8 +36,20 @@ class _VideoScreenState extends State<VideoScreen> {
   void dispose() {
     _image.dispose();
     _prompt.dispose();
-    _model.dispose();
     super.dispose();
+  }
+
+  /// Real video / i2v registrations from the generation summary.
+  List<Map<String, dynamic>> _videoModels(StudioStore store) {
+    final models = (store.generation['models'] as List?) ?? [];
+    return models
+        .map((e) => (e as Map).cast<String, dynamic>())
+        .where((m) {
+          final kind = m['kind']?.toString() ?? '';
+          final surfaces = (m['surfaces'] as List?)?.map((e) => e.toString()).toList() ?? const <String>[];
+          return kind == 'video' || surfaces.contains('image_to_video');
+        })
+        .toList();
   }
 
   Future<void> _run() async {
@@ -47,18 +63,23 @@ class _VideoScreenState extends State<VideoScreen> {
     });
     try {
       final res = await api.generateVideo(
-        model: _model.text.trim(),
+        model: _model.trim(),
         image: _image.text.trim(),
         prompt: _prompt.text.trim(),
         duration: _duration,
+        width: _width,
+        height: _height,
+        fps: _fps,
       );
       setState(() => _result = res);
       store.loadHistory();
     } on ApiException catch (e) {
-      setState(() => _error = e.message);
-      if (e.detail != null && e.detail!.isNotEmpty) {
-        setState(() => _result = {'error': e.message, 'detail': e.detail});
-      }
+      setState(() {
+        _error = '${errorCodeLabel(e.code)}: ${e.message}';
+        if (e.detail != null && e.detail!.isNotEmpty) {
+          _result = {'error': e.message, 'detail': e.detail};
+        }
+      });
     } catch (e) {
       setState(() => _error = 'Video request failed: $e');
     } finally {
@@ -72,6 +93,7 @@ class _VideoScreenState extends State<VideoScreen> {
     final rt = store.generationRuntime;
     final runtimeStatus = rt['status']?.toString() ?? (rt['states'] is Map ? 'SEE-MATRIX' : 'NOT_CONFIGURED');
     final wired = (rt['wired'] as List?)?.map((e) => e.toString()).toList() ?? const <String>[];
+    final videoModels = _videoModels(store);
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -94,8 +116,7 @@ class _VideoScreenState extends State<VideoScreen> {
               KeyValue('Runtime status', runtimeStatus),
               if (rt['reason'] != null) KeyValue('Reason', rt['reason'].toString()),
               if (rt['weights_missing'] != null) KeyValue('Weights missing', rt['weights_missing'].toString()),
-              if (rt['models'] is List)
-                KeyValue('Registered models', '${(rt['models'] as List).length}'),
+              if (rt['models'] is List) KeyValue('Registered models', '${(rt['models'] as List).length}'),
             ],
           ),
         ),
@@ -106,10 +127,13 @@ class _VideoScreenState extends State<VideoScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(
-                controller: _model,
-                decoration: const InputDecoration(labelText: 'Model id', hintText: 'wan2.2-i2v'),
-              ),
+              if (videoModels.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12),
+                  child: Text('No video generation model is registered in this build.', style: AsafText.body),
+                )
+              else
+                _modelSelector(videoModels),
               const SizedBox(height: 12),
               TextField(
                 controller: _image,
@@ -144,7 +168,17 @@ class _VideoScreenState extends State<VideoScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  _dropdown('Width', '$_width', const ['512', '640', '768', '832'], (v) => setState(() => _width = int.parse(v))),
+                  _dropdown('Height', '$_height', const ['320', '384', '480', '512'], (v) => setState(() => _height = int.parse(v))),
+                  _dropdown('FPS', '$_fps', const ['8', '12', '16', '24'], (v) => setState(() => _fps = int.parse(v))),
+                ],
+              ),
+              const SizedBox(height: 16),
               ElevatedButton.icon(
                 onPressed: _busy ? null : _run,
                 icon: _busy
@@ -186,6 +220,91 @@ class _VideoScreenState extends State<VideoScreen> {
           ),
         ],
       ],
+    );
+  }
+
+  Widget _modelSelector(List<Map<String, dynamic>> models) {
+    final ids = models.map((m) => m['id']?.toString() ?? '').where((s) => s.isNotEmpty).toList();
+    if (!ids.contains(_model)) {
+      _model = ids.isNotEmpty ? ids.first : _model;
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Model', style: AsafText.small),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: AsafColors.surfaceAlt,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AsafColors.border),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _model,
+              isExpanded: true,
+              dropdownColor: AsafColors.surfaceHigh,
+              items: models.map((m) {
+                final id = m['id']?.toString() ?? '';
+                final state = m['state']?.toString() ?? m['status']?.toString() ?? '';
+                return DropdownMenuItem(
+                  value: id,
+                  child: Text('$id${state.isEmpty ? '' : ' · $state'}', style: AsafText.body.copyWith(color: AsafColors.textPrimary), overflow: TextOverflow.ellipsis),
+                );
+              }).toList(),
+              onChanged: (v) => setState(() => _model = v ?? _model),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        ...models.map((m) {
+          final id = m['id']?.toString() ?? '';
+          final state = m['state']?.toString() ?? 'NOT_CONFIGURED';
+          final reason = m['reason']?.toString() ?? '';
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(reason.isEmpty ? id : '$id — $reason', style: AsafText.small, maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+                StatusBadge(state, dense: true),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _dropdown(String label, String value, List<String> options, ValueChanged<String> onChanged) {
+    return SizedBox(
+      width: 130,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: AsafText.small),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: AsafColors.surfaceAlt,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AsafColors.border),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: value,
+                isExpanded: true,
+                dropdownColor: AsafColors.surfaceHigh,
+                items: options.map((o) => DropdownMenuItem(value: o, child: Text(o, style: AsafText.body.copyWith(color: AsafColors.textPrimary)))).toList(),
+                onChanged: (v) => onChanged(v ?? value),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

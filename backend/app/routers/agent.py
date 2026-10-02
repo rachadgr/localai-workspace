@@ -277,6 +277,20 @@ def _serialize_task(task: Task, include_steps: bool = True) -> dict[str, Any]:
                 }
                 for s in rows
             ]
+    # Surface the model/provider that genuinely served this task (never fabricated:
+    # both stay empty when the backend did not record one).
+    model = _extract_task_model(task)
+    provider = ""
+    if model:
+        try:
+            from models.registry import registry as _model_registry
+
+            info = _model_registry.get(model)
+            if info is not None:
+                provider = info.provider
+        except Exception:  # noqa: BLE001
+            provider = ""
+
     return {
         "task_id": task.id,
         "project_id": task.project_id,
@@ -285,13 +299,41 @@ def _serialize_task(task: Task, include_steps: bool = True) -> dict[str, Any]:
         "title": task.title,
         "status": task.status,
         "progress": task.progress,
+        "model": model,
+        "provider": provider,
         "plan": task.plan_json,
         "result": task.result_json,
         "error": task.error,
+        "created_at": task.created_at.isoformat() if task.created_at else "",
         "started_at": task.started_at.isoformat() if task.started_at else "",
         "completed_at": task.completed_at.isoformat() if task.completed_at else "",
         "steps": steps,
     }
+
+
+def _extract_task_model(task: "Task") -> str:
+    """Best-effort model id from a task's stored result/plan (bounded, honest)."""
+
+    def walk(obj: Any, depth: int = 0) -> str:
+        if depth > 4 or obj is None:
+            return ""
+        if isinstance(obj, dict):
+            for key in ("model", "model_id", "model_used"):
+                value = obj.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            for value in obj.values():
+                found = walk(value, depth + 1)
+                if found:
+                    return found
+        elif isinstance(obj, list):
+            for item in obj[:20]:
+                found = walk(item, depth + 1)
+                if found:
+                    return found
+        return ""
+
+    return walk(task.result_json) or walk(task.plan_json)
 
 
 # --------------------------------------------------------------------------- #

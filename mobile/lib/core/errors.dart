@@ -37,17 +37,72 @@ ApiErrorCode _codeFromStatus(int status, String detail) {
   }
   if (status == 422) return ApiErrorCode.validation;
   if (status == 503) {
-    if (d.contains('not_configured') || d.contains('not configured')) return ApiErrorCode.modelNotConfigured;
+    if (d.contains('not_configured') || d.contains('not configured') || d.contains('weights_missing')) {
+      return ApiErrorCode.modelNotConfigured;
+    }
+    if (d.contains('not_installed') || d.contains('not installed')) return ApiErrorCode.modelNotConfigured;
     if (d.contains('misconfig')) return ApiErrorCode.modelMisconfigured;
+    if (d.contains('disabled')) return ApiErrorCode.modelDisabled;
+    if (d.contains('provider')) return ApiErrorCode.providerUnavailable;
     return ApiErrorCode.modelUnavailable;
   }
   if (status == 400) {
-    if (d.contains('capabil')) return ApiErrorCode.invalidModelCapability;
+    if (d.contains('not_servable') || d.contains('invalid_task') || d.contains('unknown task')) {
+      return ApiErrorCode.invalidTask;
+    }
+    if (d.contains('capabil') || d.contains('modality')) return ApiErrorCode.invalidModelCapability;
     if (d.contains('generation')) return ApiErrorCode.generationFailed;
     return ApiErrorCode.validation;
   }
   if (status >= 500) return ApiErrorCode.server;
   return ApiErrorCode.unknown;
+}
+
+/// A short, user-facing classification label for a structured error code. Used by
+/// the UI to show *why* something failed (never a fabricated success).
+String errorCodeLabel(ApiErrorCode code) {
+  switch (code) {
+    case ApiErrorCode.modelNotFound:
+      return 'MODEL_NOT_FOUND';
+    case ApiErrorCode.modelNotConfigured:
+      return 'MODEL_NOT_CONFIGURED';
+    case ApiErrorCode.modelUnavailable:
+      return 'MODEL_UNAVAILABLE';
+    case ApiErrorCode.modelMisconfigured:
+      return 'MODEL_MISCONFIGURED';
+    case ApiErrorCode.modelDisabled:
+      return 'MODEL_DISABLED';
+    case ApiErrorCode.providerNotConfigured:
+      return 'PROVIDER_NOT_CONFIGURED';
+    case ApiErrorCode.providerUnavailable:
+      return 'PROVIDER_UNAVAILABLE';
+    case ApiErrorCode.invalidTask:
+      return 'INVALID_TASK';
+    case ApiErrorCode.invalidModelCapability:
+      return 'INVALID_CAPABILITY';
+    case ApiErrorCode.generationFailed:
+      return 'GENERATION_FAILED';
+    case ApiErrorCode.authenticationRequired:
+      return 'AUTHENTICATION_REQUIRED';
+    case ApiErrorCode.forbidden:
+      return 'FORBIDDEN';
+    case ApiErrorCode.validation:
+      return 'INVALID_REQUEST';
+    case ApiErrorCode.timeout:
+      return 'TIMEOUT';
+    case ApiErrorCode.unreachable:
+    case ApiErrorCode.network:
+    case ApiErrorCode.cors:
+      return 'NETWORK_ERROR';
+    case ApiErrorCode.server:
+      return 'SERVER_ERROR';
+    case ApiErrorCode.notFound:
+      return 'NOT_FOUND';
+    case ApiErrorCode.runtimeError:
+      return 'RUNTIME_ERROR';
+    case ApiErrorCode.unknown:
+      return 'ERROR';
+  }
 }
 
 /// Human-readable, secret-free error returned by [AsafApi].

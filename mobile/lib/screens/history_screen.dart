@@ -71,7 +71,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
           child: Icon(_iconFor(t.kind), size: 18, color: AsafColors.forStatus(t.status)),
         ),
         title: Text(t.title.isEmpty ? t.kind : t.title, style: AsafText.body.copyWith(color: AsafColors.textPrimary), maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text('${t.kind} · ${t.when}', style: AsafText.small),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 2),
+            Text('${t.kind} · ${t.when}', style: AsafText.small, maxLines: 1, overflow: TextOverflow.ellipsis),
+            Text(
+              t.model.isEmpty ? 'model: —' : '${t.model}${t.provider.isEmpty ? '' : ' · ${t.provider}'}',
+              style: AsafText.small,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
         trailing: StatusBadge(t.status, dense: true),
       ),
     );
@@ -122,6 +134,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
             }
             final d = snap.data!;
             final result = d['result'];
+            final outputs = (t.outputs.isNotEmpty)
+                ? t.outputs
+                : (((d['output'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList());
+            final model = t.model.isNotEmpty ? t.model : (d['model']?.toString() ?? '');
+            final provider = t.provider.isNotEmpty ? t.provider : (d['provider']?.toString() ?? '');
             return ListView(
               controller: controller,
               padding: const EdgeInsets.all(20),
@@ -133,15 +150,38 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                KeyValue('Task id', t.taskId),
-                KeyValue('Kind', d['kind']?.toString() ?? ''),
-                KeyValue('Project', d['project_id']?.toString() ?? ''),
-                KeyValue('Started', d['started_at']?.toString() ?? ''),
+                KeyValue('Generation id', t.taskId),
+                KeyValue('Kind', d['kind']?.toString() ?? t.kind),
+                KeyValue('Model', model.isEmpty ? '—' : model),
+                KeyValue('Provider', provider.isEmpty ? '—' : provider),
+                KeyValue('Project', d['project_id']?.toString() ?? t.projectId),
+                KeyValue('Started', d['started_at']?.toString() ?? t.createdAt),
                 KeyValue('Completed', d['completed_at']?.toString() ?? ''),
-                if ((d['error']?.toString() ?? '').isNotEmpty)
-                  KeyValue('Error', d['error'].toString(), valueColor: AsafColors.statusUnavailable),
+                if ((d['error']?.toString() ?? t.error).isNotEmpty)
+                  KeyValue('Error', (d['error']?.toString() ?? t.error), valueColor: AsafColors.statusUnavailable),
+                if (outputs.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text('Output', style: AsafText.h3),
+                  const SizedBox(height: 6),
+                  ...outputs.map((o) {
+                    final ref = ArtifactRef.fromJson(o);
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.insert_drive_file_outlined, size: 17, color: AsafColors.primaryLight),
+                          const SizedBox(width: 10),
+                          Expanded(child: Text(ref.name, style: AsafText.body.copyWith(color: AsafColors.textPrimary), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                          Text(ref.sizeLabel, style: AsafText.small),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
                 if (result != null) ...[
                   const SizedBox(height: 16),
+                  Text('Stored result', style: AsafText.h3),
+                  const SizedBox(height: 6),
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(12),

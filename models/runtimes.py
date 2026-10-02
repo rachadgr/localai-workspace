@@ -43,6 +43,7 @@ from models.base import (
 # Runtime identifiers (stable label vocabulary)
 # --------------------------------------------------------------------------- #
 RUNTIME_OLLAMA = "ollama"
+RUNTIME_LOCALAI = "localai"
 RUNTIME_DIFFUSERS = "diffusers"
 RUNTIME_WAN_I2V = "wan_i2v"
 RUNTIME_OPENAI_COMPATIBLE = "openai_compatible"
@@ -146,6 +147,15 @@ _RUNTIMES: tuple[RuntimeDescriptor, ...] = (
         adapter="OllamaAdapter",
         supported=True,
         surfaces=(SURFACE_CHAT, SURFACE_VISION, SURFACE_EMBEDDING),
+        modalities=(MODALITY_TEXT, MODALITY_IMAGE, MODALITY_EMBEDDING),
+    ),
+    RuntimeDescriptor(
+        id=RUNTIME_LOCALAI,
+        label="LocalAI (local, OpenAI-compatible)",
+        local=True,
+        adapter="LocalAIAdapter",
+        supported=True,
+        surfaces=(SURFACE_CHAT, SURFACE_VISION, SURFACE_EMBEDDING, SURFACE_IMAGE_GENERATION),
         modalities=(MODALITY_TEXT, MODALITY_IMAGE, MODALITY_EMBEDDING),
     ),
     RuntimeDescriptor(
@@ -280,6 +290,7 @@ def runtime_view() -> dict[str, Any]:
 
 __all__ = [
     "RUNTIME_OLLAMA",
+    "RUNTIME_LOCALAI",
     "RUNTIME_DIFFUSERS",
     "RUNTIME_WAN_I2V",
     "RUNTIME_OPENAI_COMPATIBLE",

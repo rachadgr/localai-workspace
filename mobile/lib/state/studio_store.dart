@@ -29,6 +29,13 @@ class StudioStore extends ChangeNotifier {
   String? activeProjectId;
   List<Map<String, dynamic>> projects = [];
 
+  // Real workspace aggregates (dashboard / documents / slides / per-project).
+  Map<String, dynamic> dashboard = {};
+  List<Map<String, dynamic>> recentGenerations = [];
+  List<Map<String, dynamic>> recentDocuments = [];
+  List<Map<String, dynamic>> recentSlides = [];
+  List<Map<String, dynamic>> quickActions = [];
+
   Future<void> refreshAll() async {
     loading = true;
     error = null;
@@ -46,6 +53,25 @@ class StudioStore extends ChangeNotifier {
       error = 'Unexpected error while loading studio data: $e';
     } finally {
       loading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Load the authenticated dashboard aggregate (projects, recent generations,
+  /// documents, slides, models, providers, runtimes, quick actions).
+  Future<void> loadDashboard({int limit = 8}) async {
+    try {
+      final res = await _api.dashboard(limit: limit);
+      dashboard = res;
+      projects = ((res['projects'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+      recentGenerations = ((res['recent_generations'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+      recentDocuments = ((res['recent_documents'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+      recentSlides = ((res['recent_slides'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+      quickActions = ((res['quick_actions'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+      activeProjectId ??= projects.isNotEmpty ? projects.first['id']?.toString() : null;
+      notifyListeners();
+    } on ApiException catch (e) {
+      error = e.message;
       notifyListeners();
     }
   }
@@ -71,13 +97,24 @@ class StudioStore extends ChangeNotifier {
     try {
       final res = await _api.providers();
       final p = (res['providers'] as Map?)?.cast<String, dynamic>() ?? {};
-      providers = p.entries
-          .map((e) => ProviderEntry.fromJson({...((e.value as Map).cast<String, dynamic>()), 'name': e.key}))
-          .toList();
+      providers = p.entries.map((e) {
+        final raw = (e.value as Map).cast<String, dynamic>();
+        // Enrich each provider with the real model counts derived from the catalog.
+        final owned = models.where((m) => m.provider == e.key).toList();
+        return ProviderEntry.fromJson({
+          ...raw,
+          'name': e.key,
+          'model_count': owned.length,
+          'available_count': owned.where((m) => m.usable).length,
+        });
+      }).toList();
     } on ApiException {
       providers = [];
     }
   }
+
+  /// Models belonging to a provider (for the Provider Center detail view).
+  List<ModelEntry> modelsForProvider(String provider) => models.where((m) => m.provider == provider).toList();
 
   Future<void> _loadRouter() async {
     try {
@@ -137,17 +174,49 @@ class StudioStore extends ChangeNotifier {
     return activeProjectId;
   }
 
+  /// Load real generation history, enriched with model / provider / output.
   Future<void> loadHistory() async {
     try {
-      final res = await _api.tasks(projectId: activeProjectId, limit: 100);
-      final list = (res['tasks'] as List?) ?? [];
+      final res = await _api.generations(projectId: activeProjectId, limit: 100);
+      final list = (res['generations'] as List?) ?? [];
       history = list.map((e) => HistoryTask.fromJson((e as Map).cast<String, dynamic>())).toList();
       notifyListeners();
     } on ApiException catch (e) {
-      error = e.message;
-      notifyListeners();
+      // Fall back to the raw task list if the aggregate endpoint is unavailable.
+      try {
+        final res = await _api.tasks(projectId: activeProjectId, limit: 100);
+        final list = (res['tasks'] as List?) ?? [];
+        history = list.map((e) => HistoryTask.fromJson((e as Map).cast<String, dynamic>())).toList();
+        notifyListeners();
+      } on ApiException {
+        error = e.message;
+        notifyListeners();
+      }
     }
   }
+
+  /// Real generated documents for the active project.
+  Future<List<Map<String, dynamic>>> loadDocuments() async {
+    try {
+      final res = await _api.documents(projectId: activeProjectId);
+      return ((res['documents'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+    } on ApiException {
+      return const [];
+    }
+  }
+
+  /// Real generated slide decks for the active project.
+  Future<List<Map<String, dynamic>>> loadSlides() async {
+    try {
+      final res = await _api.slides(projectId: activeProjectId);
+      return ((res['slides'] as List?) ?? []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+    } on ApiException {
+      return const [];
+    }
+  }
+
+  /// The real per-project workspace view (conversations, artifacts, files, tasks).
+  Future<Map<String, dynamic>> workspace(String projectId) async => _api.workspace(projectId);
 
   Future<Map<String, dynamic>> testProvider(String provider) async {
     return _api.testConnection(provider: provider);

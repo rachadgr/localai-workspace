@@ -22,6 +22,7 @@ from backend.app.routers import agent as agent_router
 from backend.app.routers import models as models_router
 from backend.app.routers import projects as projects_router
 from backend.app.routers import system as system_router
+from backend.app.routers import workspace as workspace_router
 from configs.settings import settings
 
 logger = get_logger("app")
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(models_router.router, prefix="/api")
     app.include_router(system_router.router, prefix="/api")
     app.include_router(projects_router.router, prefix="/api")
+    app.include_router(workspace_router.router, prefix="/api")
     app.include_router(agent_router.router, prefix="/api")
 
     # Serve the built frontend (Next.js static export) when present.

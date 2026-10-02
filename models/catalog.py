@@ -52,13 +52,13 @@ from models.base import (
     STATUS_NOT_CONFIGURED,
     infer_modality,
 )
-from models.runtimes import RUNTIME_DIFFUSERS, RUNTIME_WAN_I2V
+from models.runtimes import RUNTIME_DIFFUSERS, RUNTIME_LOCALAI, RUNTIME_WAN_I2V
 
 # --------------------------------------------------------------------------- #
 # Provider classification (labels only — never credentials)
 # --------------------------------------------------------------------------- #
 #: Providers whose models run locally (no external egress required).
-LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama"})
+LOCAL_PROVIDERS: frozenset[str] = frozenset({"ollama", "localai"})
 
 
 def entry_runtime(entry: "ModelCatalogEntry") -> str:
@@ -599,6 +599,101 @@ _ENTRIES: list[ModelCatalogEntry] = [
         kind=KIND_EMBEDDING,
         context_window=8192,
         cost_tier="free",
+    ),
+    # ------------------------------------------------------- LocalAI (local runtime)
+    # LocalAI serves *local* models over an OpenAI-compatible surface (see
+    # models.runtimes.RUNTIME_LOCALAI). These are canonical LocalAI model-gallery
+    # ids, declarative only: a model becomes AVAILABLE **only** after the registry
+    # probes it against a reachable LocalAI runtime (set LOCALAI_BASE_URL). Nothing
+    # is ever downloaded by this workspace — LocalAI's own model management does.
+    _entry(
+        "llama-3.2-3b-instruct",
+        "Llama 3.2 3B Instruct (LocalAI)",
+        "Llama",
+        "localai",
+        context_window=131072,
+        reasoning=False,
+        tools=True,
+        cost_tier="free",
+        notes="LocalAI gallery: small instruction-tuned Llama for local chat.",
+        runtime=RUNTIME_LOCALAI,
+    ),
+    _entry(
+        "phi-3-mini-4k-instruct",
+        "Phi-3 Mini 4K Instruct (LocalAI)",
+        "Phi",
+        "localai",
+        context_window=4096,
+        tools=False,
+        cost_tier="free",
+        notes="LocalAI gallery: compact instruction model for low-resource hosts.",
+        runtime=RUNTIME_LOCALAI,
+    ),
+    _entry(
+        "qwen2.5-7b-instruct",
+        "Qwen2.5 7B Instruct (LocalAI)",
+        "Qwen2.5",
+        "localai",
+        context_window=32768,
+        tools=True,
+        cost_tier="free",
+        notes="LocalAI gallery: dense Qwen2.5 instruction model.",
+        runtime=RUNTIME_LOCALAI,
+    ),
+    _entry(
+        "qwen3-4b",
+        "Qwen3 4B (LocalAI)",
+        "Qwen3",
+        "localai",
+        context_window=131072,
+        reasoning=True,
+        tools=True,
+        cost_tier="free",
+        notes="LocalAI gallery: dense Qwen3 with switchable thinking mode.",
+        runtime=RUNTIME_LOCALAI,
+    ),
+    _entry(
+        "mistral-7b-instruct-v0.3",
+        "Mistral 7B Instruct v0.3 (LocalAI)",
+        "Mistral",
+        "localai",
+        context_window=32768,
+        tools=True,
+        cost_tier="free",
+        notes="LocalAI gallery: Mistral 7B instruction model.",
+        runtime=RUNTIME_LOCALAI,
+    ),
+    _entry(
+        "granite-3.1-8b-instruct",
+        "Granite 3.1 8B Instruct (LocalAI)",
+        "Granite",
+        "localai",
+        context_window=131072,
+        tools=True,
+        cost_tier="free",
+        notes="LocalAI gallery: IBM Granite instruction model.",
+        runtime=RUNTIME_LOCALAI,
+    ),
+    _entry(
+        "all-minilm-l6-v2",
+        "All-MiniLM-L6-v2 (LocalAI)",
+        "MiniLM",
+        "localai",
+        kind=KIND_EMBEDDING,
+        context_window=512,
+        cost_tier="free",
+        notes="LocalAI gallery: compact sentence-embedding model.",
+        runtime=RUNTIME_LOCALAI,
+    ),
+    _entry(
+        "stablediffusion",
+        "Stable Diffusion (LocalAI)",
+        "Stable Diffusion",
+        "localai",
+        kind=KIND_IMAGE,
+        cost_tier="free",
+        notes="LocalAI gallery: local image generation via the OpenAI images API.",
+        runtime=RUNTIME_LOCALAI,
     ),
     # ------------------------------------------------------------------ OpenAI (cloud)
     _entry(

@@ -57,6 +57,7 @@ from models.base import (
 from models.adapters import (
     AnthropicAdapter,
     EchoAdapter,
+    LocalAIAdapter,
     OllamaAdapter,
     OpenAICompatibleAdapter,
 )
@@ -167,6 +168,11 @@ class ModelRegistry:
         if ollama_url:
             self._adapters["ollama"] = OllamaAdapter(ollama_url, getattr(settings, "ollama_api_key", ""))
 
+        # 3b. LocalAI — a self-hosted, OpenAI-compatible local runtime (localai.io).
+        localai_url = getattr(settings, "localai_base_url", "") or ""
+        if localai_url:
+            self._adapters["localai"] = LocalAIAdapter(localai_url, getattr(settings, "localai_api_key", ""))
+
         # 4. Optional extra named OpenAI-compatible providers (LAIW_PROVIDER_<NAME>_URL/_KEY).
         for name, (url, key) in _extra_provider_configs().items():
             self._adapters[name] = OpenAICompatibleAdapter(url, key, label=name)
@@ -195,7 +201,7 @@ class ModelRegistry:
             return self._adapters[info.provider]
 
         # No discovery yet / unknown id → prefer a configured chat provider.
-        for name in ("openai_compatible", "anthropic", "ollama"):
+        for name in ("openai_compatible", "anthropic", "ollama", "localai"):
             adapter = self._adapters.get(name)
             if adapter and adapter.is_configured() and _supports_chat(adapter):
                 return adapter
@@ -670,7 +676,7 @@ class ModelRegistry:
             model_name = self.default_chat_model()
             candidate = self.get_adapter(model_name)
         except Exception:
-            for name in ("openai_compatible", "anthropic", "ollama"):
+            for name in ("openai_compatible", "anthropic", "ollama", "localai"):
                 adapter = self._adapters.get(name)
                 if adapter and adapter.is_configured():
                     candidate = adapter

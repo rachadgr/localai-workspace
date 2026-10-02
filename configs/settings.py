@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     # native /api/chat endpoint, which is the one that genuinely honours `think`
     # (the /v1 OpenAI-compatible surface ignores it).
     ollama_think: str = Field(default_factory=lambda: os.environ.get("LAIW_OLLAMA_THINK", ""))
+    # LocalAI (https://localai.io) — a self-hosted, OpenAI-compatible runtime that
+    # serves local chat / embedding / image models. It speaks the OpenAI-compatible
+    # surface (/v1/models, /v1/chat/completions, /v1/embeddings,
+    # /v1/images/generations) plus a readiness probe (/readyz). Set the base URL
+    # (e.g. http://localhost:8080); an API key is optional (only when LocalAI runs
+    # with auth). When unset the provider reports UNAVAILABLE — never fabricated.
+    localai_base_url: str = Field(default_factory=lambda: os.environ.get("LOCALAI_BASE_URL", ""))
+    localai_api_key: str = Field(default_factory=lambda: os.environ.get("LOCALAI_API_KEY", ""))
     # Optional named OpenAI-compatible providers: LAIW_PROVIDER_<NAME>_URL / _KEY
     # e.g. LAIW_PROVIDER_GROQ_URL + LAIW_PROVIDER_GROQ_KEY
     # (parsed lazily by models.registry; never persisted or returned to clients)

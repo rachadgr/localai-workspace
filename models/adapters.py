@@ -923,6 +923,76 @@ def _ollama_context(entry: dict[str, Any], model_id: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# LocalAI (self-hosted, OpenAI-compatible)
+# --------------------------------------------------------------------------- #
+class LocalAIAdapter(OpenAICompatibleAdapter):
+    """LocalAI runtime adapter (https://localai.io).
+
+    LocalAI is a self-hosted, OpenAI-compatible server that serves *local* models:
+    chat, embeddings, image generation and (where a model is installed) more. It
+    exposes the standard OpenAI surface (``/v1/models``, ``/v1/chat/completions``,
+    ``/v1/embeddings``, ``/v1/images/generations``) plus a readiness probe at
+    ``/readyz``.
+
+    This adapter simply specializes :class:`OpenAICompatibleAdapter` so:
+
+    * discovery uses the real ``/v1/models`` listing (no fabricated models);
+    * an empty API key is accepted (LocalAI runs unauthenticated by default — an
+      ``is_local`` OpenAI-compatible server);
+    * ``status()`` additionally consults ``/readyz`` so a reachable-but-not-ready
+      runtime is reported honestly instead of being marked ``AVAILABLE``.
+
+    Honesty rules are inherited unchanged: a model is only ``AVAILABLE`` after a
+    real minimal request succeeds; nothing is ever fabricated and no model is
+    downloaded. A LocalAI model that is listed but not installed on the host is
+    reported whatever its probe genuinely returns — never forced to ``AVAILABLE``.
+    """
+
+    name = "localai"
+    provider = "localai"
+    is_local = True
+
+    def __init__(self, base_url: str, api_key: str = "") -> None:
+        # LocalAI speaks OpenAI-compatible at the root or under /v1; normalize to
+        # the /v1 surface (matching OpenAICompatibleAdapter expectations).
+        base = (base_url or "").rstrip("/")
+        if base and not base.endswith("/v1"):
+            base = f"{base}/v1"
+        super().__init__(base, api_key, label="localai", is_local=True)
+
+    def _native_base(self) -> str:
+        base = self.base_url
+        return base[:-3] if base.endswith("/v1") else base
+
+    def readyz(self) -> bool | None:
+        """Consult LocalAI's readiness probe.
+
+        Returns ``True`` when ``/readyz`` answers 2xx, ``False`` when it answers a
+        non-2xx status, and ``None`` when the probe could not be reached at all
+        (so a missing ``/readyz`` on older builds never forces a false verdict).
+        """
+        if not self.base_url:
+            return None
+        try:
+            resp = requests.get(f"{self._native_base()}/readyz", timeout=settings.model_probe_timeout_seconds)
+        except requests.RequestException:
+            return None
+        return 200 <= resp.status_code < 300
+
+    def status(self) -> str:
+        if not self.is_configured():
+            return STATUS_MISCONFIGURED
+        ready = self.readyz()
+        if ready is False:
+            # Reachable server that is not ready to serve yet.
+            return STATUS_UNAVAILABLE
+        try:
+            return STATUS_AVAILABLE if self.list_models() else STATUS_UNAVAILABLE
+        except Exception:  # noqa: BLE001
+            return STATUS_UNAVAILABLE
+
+
+# --------------------------------------------------------------------------- #
 # Echo (deterministic, tests only)
 # --------------------------------------------------------------------------- #
 class EchoAdapter(ModelAdapter):
@@ -1009,6 +1079,7 @@ __all__ = [
     "OpenAICompatibleAdapter",
     "AnthropicAdapter",
     "OllamaAdapter",
+    "LocalAIAdapter",
     "EchoAdapter",
     "_guard_control_message",
     "_CONTROL_MESSAGE_MARKERS",

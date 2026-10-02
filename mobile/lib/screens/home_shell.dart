@@ -13,8 +13,9 @@ import 'models_screen.dart';
 import 'providers_screen.dart';
 import 'settings_screen.dart';
 import 'video_screen.dart';
+import 'workspace_screen.dart';
 
-/// ASAF AI Studio shell: an 8-section workspace with a permanent rail on wide
+/// ASAF AI Studio shell: a 9-section workspace with a permanent rail on wide
 /// screens and a drawer on phones.
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -32,21 +33,23 @@ class _HomeShellState extends State<HomeShell> {
     _NavItem('Chat', Icons.forum_outlined, Icons.forum),
     _NavItem('Image', Icons.image_outlined, Icons.image),
     _NavItem('Video', Icons.movie_outlined, Icons.movie),
+    _NavItem('Workspace', Icons.folder_copy_outlined, Icons.folder_copy),
     _NavItem('Models', Icons.memory_outlined, Icons.memory),
     _NavItem('Providers', Icons.hub_outlined, Icons.hub),
     _NavItem('History', Icons.history_outlined, Icons.history),
     _NavItem('Settings', Icons.settings_outlined, Icons.settings),
   ];
 
-  static const _screens = <Widget>[
-    DashboardScreen(),
-    ChatScreen(),
-    ImageScreen(),
-    VideoScreen(),
-    ModelsScreen(),
-    ProvidersScreen(),
-    HistoryScreen(),
-    SettingsScreen(),
+  late final List<Widget> _screens = <Widget>[
+    DashboardScreen(onNavigate: _select),
+    const ChatScreen(),
+    const ImageScreen(),
+    const VideoScreen(),
+    const WorkspaceScreen(),
+    const ModelsScreen(),
+    const ProvidersScreen(),
+    const HistoryScreen(),
+    const SettingsScreen(),
   ];
 
   @override
@@ -55,7 +58,7 @@ class _HomeShellState extends State<HomeShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final store = context.read<StudioStore>();
       await store.refreshAll();
-      await store.loadProjects();
+      await store.loadDashboard();
     });
   }
 
@@ -64,7 +67,7 @@ class _HomeShellState extends State<HomeShell> {
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
       Navigator.of(context).pop(); // close the drawer
     }
-    if (i == 6) context.read<StudioStore>().loadHistory();
+    if (i == 7) context.read<StudioStore>().loadHistory();
   }
 
   @override
@@ -123,7 +126,7 @@ class _HomeShellState extends State<HomeShell> {
             ),
           ),
           TextButton.icon(
-            onPressed: () => _select(7),
+            onPressed: () => _select(8),
             icon: const Icon(Icons.settings, size: 16),
             label: const Text('Settings'),
           ),

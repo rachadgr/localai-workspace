@@ -44,6 +44,8 @@ class ProvidersScreen extends StatelessWidget {
   }
 
   Widget _providerTile(BuildContext context, ProviderEntry p) {
+    final models = context.read<StudioStore>().modelsForProvider(p.name);
+    final availableModels = models.where((m) => m.usable).toList();
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
@@ -65,9 +67,21 @@ class ProvidersScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           KeyValue('Configured', p.configured ? 'yes' : 'no', valueColor: p.configured ? AsafColors.statusAvailable : AsafColors.statusMisconfigured),
-          KeyValue('Type', p.local ? 'local' : 'remote'),
+          KeyValue('Type', p.local ? 'local (no egress)' : 'remote'),
+          KeyValue('Models discovered', '${models.length}'),
+          KeyValue('Models available', '${availableModels.length}', valueColor: availableModels.isNotEmpty ? AsafColors.statusAvailable : AsafColors.statusUnavailable),
           if (p.endpoint.isNotEmpty) KeyValue('Endpoint', p.endpoint),
           if (p.error.isNotEmpty) KeyValue('Last error', p.error, valueColor: AsafColors.statusUnavailable),
+          if (models.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('Available models', style: AsafText.small),
+            const SizedBox(height: 6),
+            Wrap(
+              children: models
+                  .map((m) => Tag(m.id, color: m.usable ? AsafColors.statusAvailable : AsafColors.statusNotConfigured))
+                  .toList(),
+            ),
+          ],
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerLeft,
