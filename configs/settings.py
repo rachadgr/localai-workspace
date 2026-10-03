@@ -10,7 +10,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: Repository root (the directory containing ``backend/``, ``agents/``, ``configs/``…).
@@ -94,6 +94,20 @@ class Settings(BaseSettings):
     # Optional named OpenAI-compatible providers: LAIW_PROVIDER_<NAME>_URL / _KEY
     # e.g. LAIW_PROVIDER_GROQ_URL + LAIW_PROVIDER_GROQ_KEY
     # (parsed lazily by models.registry; never persisted or returned to clients)
+
+    # ------------------------------------------------------- deployment mode
+    #: When true, the cloud providers (the OpenAI-compatible endpoint and the
+    #: Anthropic Messages API) are **not wired at all** for this deployment — the
+    #: registry only builds the local runtimes (Ollama / LocalAI). This is the
+    #: honest switch for a self-hosted, GPU-free box (e.g. Kaggle) that must serve
+    #: *only* real local models: it prevents a reachable-but-billed cloud proxy from
+    #: being listed as a chat candidate or selected as the default model. No route,
+    #: adapter or capability is removed — cloud adapters simply aren't constructed.
+    #: Default false keeps the full multi-provider surface everywhere else.
+    disable_cloud_providers: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("LAIW_DISABLE_CLOUD_PROVIDERS", "disable_cloud_providers"),
+    )
 
     # ------------------------------------------------------- model discovery
     # Health/availability verdicts are cached for this many seconds so we never

@@ -86,6 +86,12 @@ _KNOWN_CHAT_PREFERENCE = (
     "claude-sonnet-4-5",
     "qwen2.5",
     "llama3.1",
+    # Local runtimes (LocalAI / Ollama) — preferred over a cloud proxy when this
+    # deployment serves local models only (see ``disable_cloud_providers``).
+    "gemma-3-1b-it",
+    "gemma-3-4b-it",
+    "qwen3:4b",
+    "llama3.2:3b",
 )
 
 
@@ -156,12 +162,20 @@ class ModelRegistry:
         """Instantiate every provider adapter from environment configuration."""
         self._adapters = {}
 
-        # 1. Primary OpenAI-compatible endpoint (sandbox proxy / any OpenAI API).
-        primary = OpenAICompatibleAdapter(settings.llm_base_url, settings.llm_api_key, label="openai_compatible")
-        self._adapters["openai_compatible"] = primary
+        # Deployment switch: a self-hosted, GPU-free box (e.g. Kaggle) may want the
+        # local runtimes to be the *only* providers, so a reachable-but-billed cloud
+        # proxy can never be listed as a chat candidate nor picked as the default
+        # model. This removes nothing from the code — the cloud adapters simply are
+        # not constructed for such a deployment (`LAIW_DISABLE_CLOUD_PROVIDERS=true`).
+        cloud_disabled = bool(getattr(settings, "disable_cloud_providers", False))
 
-        # 2. Anthropic Messages API.
-        self._adapters["anthropic"] = AnthropicAdapter(settings.llm_anthropic_base_url, settings.llm_anthropic_api_key)
+        # 1. Primary OpenAI-compatible endpoint (sandbox proxy / any OpenAI API).
+        if not cloud_disabled:
+            primary = OpenAICompatibleAdapter(settings.llm_base_url, settings.llm_api_key, label="openai_compatible")
+            self._adapters["openai_compatible"] = primary
+
+            # 2. Anthropic Messages API.
+            self._adapters["anthropic"] = AnthropicAdapter(settings.llm_anthropic_base_url, settings.llm_anthropic_api_key)
 
         # 3. Local runtime: Ollama (native discovery) or a generic local OpenAI server.
         ollama_url = getattr(settings, "ollama_base_url", "") or ""
